@@ -56,8 +56,9 @@ http://localhost:3000
 
 ## ToDo
 
-- [ ] make tags abd text clearly visible in dark mode
+- [ ] make tags(colours) abd text clearly visible in dark mode
 - [ ] add more search filters
 - [ ] filter by repo repos w max open issues at top of filter list
 - [ ] add load all pages w pages nums at bottom instead of load more
+- [ ] automate searching by refreshing search every 30 mins and send mail or sms if user preferred type of issues come up 
 
