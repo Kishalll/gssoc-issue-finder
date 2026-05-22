@@ -44,8 +44,8 @@ const requestHeaders = {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const filters: FilterState = {
-    difficulty: searchParams.get("difficulty") ?? "",
-    priority: searchParams.get("priority") ?? ""
+    level: searchParams.get("level") ?? "",
+    type: searchParams.get("type") ?? ""
   };
 
   const errors: unknown[] = [];
@@ -227,12 +227,12 @@ async function fetchGitHubIssues(filters: FilterState) {
 async function fetchGitHubSearchPage(filters: FilterState, page: number) {
   const queryParts = ["label:gssoc26", "no:assignee", "state:open", "type:issue"];
 
-  if (filters.difficulty) {
-    queryParts.push(`label:${filters.difficulty}`);
+  if (filters.level) {
+    queryParts.push(`label:"level:${filters.level}"`);
   }
 
-  if (filters.priority) {
-    queryParts.push(`label:${filters.priority}`);
+  if (filters.type) {
+    queryParts.push(`label:"type:${filters.type}"`);
   }
 
   const url = new URL("https://api.github.com/search/issues");
@@ -303,11 +303,11 @@ function shouldIncludeIssue(issue: NormalizedIssue, filters: FilterState) {
   const hasAssignee =
     Boolean(issue.assignee) || (Array.isArray(issue.assignees) && issue.assignees.length > 0);
   const isPullRequest = Boolean(issue.pullRequest) || issue.url.includes("/pull/");
-  const hasDifficulty = filters.difficulty
-    ? labelNames.some((labelName) => labelName.includes(filters.difficulty.toLowerCase()))
+  const hasLevel = filters.level
+    ? labelNames.some((labelName) => labelName.includes(`level:${filters.level.toLowerCase()}`))
     : true;
-  const hasPriority = filters.priority
-    ? labelNames.some((labelName) => labelName.includes(filters.priority.toLowerCase()))
+  const hasType = filters.type
+    ? labelNames.some((labelName) => labelName.includes(`type:${filters.type.toLowerCase()}`))
     : true;
 
   return (
@@ -315,8 +315,8 @@ function shouldIncludeIssue(issue: NormalizedIssue, filters: FilterState) {
     hasGssocLabel &&
     !hasAssignee &&
     !isPullRequest &&
-    hasDifficulty &&
-    hasPriority
+    hasLevel &&
+    hasType
   );
 }
 

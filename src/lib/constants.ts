@@ -7,9 +7,20 @@ export const GSSOC_LABEL_VARIANTS = [
   "gssoc' 26"
 ] as const;
 
-export const DIFFICULTY_OPTIONS = ["easy", "medium", "hard"] as const;
+export const LEVEL_OPTIONS = ["beginner", "intermediate", "advanced", "critical"] as const;
 
-export const PRIORITY_OPTIONS = ["high", "medium", "low"] as const;
+export const TYPE_OPTIONS = [
+  "bug",
+  "feature",
+  "docs",
+  "testing",
+  "security",
+  "performance",
+  "design",
+  "refactor",
+  "devops",
+  "accessibility"
+] as const;
 
 export const EXCLUDED_LABELS = ["invalid", "wontfix", "duplicate", "spam"] as const;
 

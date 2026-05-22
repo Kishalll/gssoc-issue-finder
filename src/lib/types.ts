@@ -15,8 +15,8 @@ export interface Issue {
 }
 
 export interface FilterState {
-  difficulty: string;
-  priority: string;
+  level: string;
+  type: string;
 }
 
 export interface ApiResponse {

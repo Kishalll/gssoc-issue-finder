@@ -5,8 +5,8 @@ import * as React from "react";
 import type { ApiResponse, FilterState, Issue } from "@/lib/types";
 
 const initialFilters: FilterState = {
-  difficulty: "",
-  priority: ""
+  level: "",
+  type: ""
 };
 
 export function useIssues() {
@@ -23,12 +23,12 @@ export function useIssues() {
     try {
       const params = new URLSearchParams();
 
-      if (filters.difficulty) {
-        params.set("difficulty", filters.difficulty);
+      if (filters.level) {
+        params.set("level", filters.level);
       }
 
-      if (filters.priority) {
-        params.set("priority", filters.priority);
+      if (filters.type) {
+        params.set("type", filters.type);
       }
 
       const response = await fetch(`/api/issues${params.size ? `?${params.toString()}` : ""}`);

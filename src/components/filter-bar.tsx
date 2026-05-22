@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
-import { DIFFICULTY_OPTIONS, PRIORITY_OPTIONS } from "@/lib/constants";
+import { LEVEL_OPTIONS, TYPE_OPTIONS } from "@/lib/constants";
 import type { FilterState } from "@/lib/types";
 
 interface FilterBarProps {
@@ -24,21 +24,21 @@ export function FilterBar({ filters, onFilterChange, onSearch, isLoading }: Filt
   return (
     <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
       <label className="block">
-        <span className="mb-2 block text-sm font-medium text-foreground">Difficulty</span>
+        <span className="mb-2 block text-sm font-medium text-foreground">Level</span>
         <Select
-          value={filters.difficulty || "all"}
+          value={filters.level || "all"}
           onValueChange={(value) =>
-            onFilterChange({ ...filters, difficulty: value === "all" ? "" : value })
+            onFilterChange({ ...filters, level: value === "all" ? "" : value })
           }
         >
           <SelectTrigger>
-            <SelectValue placeholder="All difficulties" />
+            <SelectValue placeholder="All levels" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All difficulties</SelectItem>
-            {DIFFICULTY_OPTIONS.map((difficulty) => (
-              <SelectItem key={difficulty} value={difficulty}>
-                {capitalize(difficulty)}
+            <SelectItem value="all">All levels</SelectItem>
+            {LEVEL_OPTIONS.map((level) => (
+              <SelectItem key={level} value={level}>
+                {capitalize(level)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -46,21 +46,21 @@ export function FilterBar({ filters, onFilterChange, onSearch, isLoading }: Filt
       </label>
 
       <label className="block">
-        <span className="mb-2 block text-sm font-medium text-foreground">Priority</span>
+        <span className="mb-2 block text-sm font-medium text-foreground">Type</span>
         <Select
-          value={filters.priority || "all"}
+          value={filters.type || "all"}
           onValueChange={(value) =>
-            onFilterChange({ ...filters, priority: value === "all" ? "" : value })
+            onFilterChange({ ...filters, type: value === "all" ? "" : value })
           }
         >
           <SelectTrigger>
-            <SelectValue placeholder="All priorities" />
+            <SelectValue placeholder="All types" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All priorities</SelectItem>
-            {PRIORITY_OPTIONS.map((priority) => (
-              <SelectItem key={priority} value={priority}>
-                {capitalize(priority)}
+            <SelectItem value="all">All types</SelectItem>
+            {TYPE_OPTIONS.map((type) => (
+              <SelectItem key={type} value={type}>
+                {formatType(type)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -82,4 +82,8 @@ export function FilterBar({ filters, onFilterChange, onSearch, isLoading }: Filt
 
 function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function formatType(value: string) {
+  return value === "devops" ? "DevOps" : capitalize(value);
 }
