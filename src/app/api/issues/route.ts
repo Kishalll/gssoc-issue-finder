@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import {
   EXCLUDED_LABELS,
   GSSOC_ISSUES_URL,
-  GSSOC_LABEL_VARIANTS
+  GSSOC_LABEL_VARIANTS,
+  PARENT_ISSUE_LABELS
 } from "@/lib/constants";
 import type { ApiResponse, FilterState, Issue, Label } from "@/lib/types";
 
@@ -69,7 +70,9 @@ export async function GET(request: Request) {
     }
   } catch (error) {
     errors.push(error);
-    console.error("GSSoC page scrape failed", error);
+    console.warn(
+      `GSSoC page scrape unavailable: ${error instanceof Error ? error.message : String(error)}. Falling back to GitHub Search API.`
+    );
   }
 
   try {
@@ -407,6 +410,7 @@ function shouldIncludeIssue(issue: NormalizedIssue, filters: FilterState) {
   const hasExcludedLabel = labelNames.some((labelName) =>
     EXCLUDED_LABELS.some((excluded) => labelName.includes(excluded))
   );
+  const isParentIssue = isParentOrTrackingIssue(issue, labelNames);
   const hasGssocLabel = labelNames.some((labelName) =>
     GSSOC_LABEL_VARIANTS.some((variant) => labelName.includes(variant))
   );
@@ -422,12 +426,35 @@ function shouldIncludeIssue(issue: NormalizedIssue, filters: FilterState) {
 
   return (
     !hasExcludedLabel &&
+    !isParentIssue &&
     hasGssocLabel &&
     !hasAssignee &&
     !isPullRequest &&
     hasLevel &&
     hasType
   );
+}
+
+function isParentOrTrackingIssue(issue: NormalizedIssue, labelNames: string[]) {
+  const hasParentLabel = labelNames.some((labelName) =>
+    PARENT_ISSUE_LABELS.some((parentLabel) => labelName.includes(parentLabel))
+  );
+
+  if (hasParentLabel) {
+    return true;
+  }
+
+  const searchableText = `${issue.title}\n${issue.body ?? ""}`.toLowerCase();
+
+  return [
+    /\bparent\s+(?:roadmap\s+)?issue\b/,
+    /\btracking\s+issue\b/,
+    /\bmeta\s+issue\b/,
+    /\bepic\s+issue\b/,
+    /\bchild\s+issues?\b/,
+    /\bsub[-\s]?issues?\b/,
+    /\bcontributors?\s+should\s+pick\s+one\s+child\s+issue\b/
+  ].some((pattern) => pattern.test(searchableText));
 }
 
 function normalizeLabels(value: unknown): Label[] {

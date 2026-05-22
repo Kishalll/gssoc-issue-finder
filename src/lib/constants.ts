@@ -22,7 +22,9 @@ export const TYPE_OPTIONS = [
   "accessibility"
 ] as const;
 
-export const EXCLUDED_LABELS = ["invalid", "wontfix", "duplicate", "spam"] as const;
+export const EXCLUDED_LABELS = ["invalid", "wontfix", "duplicate", "spam", "blocked"] as const;
+
+export const PARENT_ISSUE_LABELS = ["parent", "epic", "roadmap", "tracking", "meta"] as const;
 
 export const GSSOC_ISSUES_URL = "https://gssoc.girlscript.org/issues";
 
