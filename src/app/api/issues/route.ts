@@ -37,6 +37,17 @@ type GitHubSearchResponse = {
   items: GitHubIssueItem[];
 };
 
+type GitHubCommitResponseItem = {
+  commit?: {
+    author?: {
+      date?: string;
+    };
+    committer?: {
+      date?: string;
+    };
+  };
+};
+
 const requestHeaders = {
   "User-Agent": "GSSoC-Issue-Finder/1.0"
 };
@@ -54,7 +65,7 @@ export async function GET(request: Request) {
     const scrapedIssues = await scrapeGssocIssues();
 
     if (scrapedIssues.length > 0) {
-      return NextResponse.json(toApiResponse(scrapedIssues, filters));
+      return NextResponse.json(await toApiResponse(scrapedIssues, filters));
     }
   } catch (error) {
     errors.push(error);
@@ -63,7 +74,7 @@ export async function GET(request: Request) {
 
   try {
     const githubIssues = await fetchGitHubIssues(filters);
-    return NextResponse.json(toApiResponse(githubIssues, filters));
+    return NextResponse.json(await toApiResponse(githubIssues, filters));
   } catch (error) {
     errors.push(error);
     console.error("GitHub issue search failed", error);
@@ -206,6 +217,11 @@ function normalizeScrapedIssue(raw: unknown): NormalizedIssue | null {
       stringValue(record.created_at) ??
       stringValue(record.created) ??
       new Date().toISOString(),
+    lastCommitAt:
+      stringValue(record.lastCommitAt) ??
+      stringValue(record.last_commit_at) ??
+      stringValue(record.pushedAt) ??
+      stringValue(record.pushed_at),
     assignee: record.assignee,
     assignees: Array.isArray(record.assignees) ? record.assignees : null
   };
@@ -243,14 +259,7 @@ async function fetchGitHubSearchPage(filters: FilterState, page: number) {
   url.searchParams.set("page", String(page));
 
   const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
-  const headers: HeadersInit = {
-    Accept: "application/vnd.github.v3+json",
-    ...requestHeaders
-  };
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
+  const headers = getGitHubHeaders(token);
 
   const response = await fetch(url, { headers });
 
@@ -274,22 +283,123 @@ function mapGitHubIssue(item: GitHubIssueItem): NormalizedIssue {
     })),
     url: item.html_url,
     createdAt: item.created_at,
+    lastCommitAt: null,
     assignee: item.assignee,
     assignees: item.assignees,
     pullRequest: item.pull_request
   };
 }
 
-function toApiResponse(issues: NormalizedIssue[], filters: FilterState): ApiResponse {
-  const filteredSortedIssues = issues
+async function toApiResponse(issues: NormalizedIssue[], filters: FilterState): Promise<ApiResponse> {
+  const filteredIssues = issues
     .filter((issue) => shouldIncludeIssue(issue, filters))
-    .sort((left, right) => left.comments - right.comments)
     .map(({ assignee: _assignee, assignees: _assignees, pullRequest: _pullRequest, ...issue }) => issue);
+  const issuesWithCommitDates = await enrichIssuesWithLastCommitDates(filteredIssues);
+  const filteredSortedIssues = issuesWithCommitDates.sort((left, right) => sortIssues(left, right));
 
   return {
     issues: filteredSortedIssues,
     total: filteredSortedIssues.length
   };
+}
+
+async function enrichIssuesWithLastCommitDates<T extends Issue>(issues: T[]) {
+  const missingRepoNames = Array.from(
+    new Set(
+      issues
+        .filter((issue) => !issue.lastCommitAt)
+        .map((issue) => issue.repoName)
+        .filter((repoName) => /^[^/\s]+\/[^/\s]+$/.test(repoName))
+    )
+  );
+
+  if (missingRepoNames.length === 0) {
+    return issues;
+  }
+
+  const repoDates = new Map<string, string | null>();
+  const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
+
+  await asyncPool(missingRepoNames, 8, async (repoName) => {
+    repoDates.set(repoName, await fetchRepoLastCommitDate(repoName, token));
+  });
+
+  return issues.map((issue) => ({
+    ...issue,
+    lastCommitAt: issue.lastCommitAt ?? repoDates.get(issue.repoName) ?? null
+  }));
+}
+
+async function fetchRepoLastCommitDate(repoName: string, token?: string) {
+  const [owner, repo] = repoName.split("/");
+  const url = new URL(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits`
+  );
+  url.searchParams.set("per_page", "1");
+
+  const response = await fetch(url, {
+    headers: getGitHubHeaders(token),
+    next: { revalidate: 300 }
+  });
+
+  if (!response.ok) {
+    console.warn(`Could not fetch latest commit for ${repoName}: ${response.status}`);
+    return null;
+  }
+
+  const commits = (await response.json()) as GitHubCommitResponseItem[];
+  const latest = commits.at(0);
+
+  return latest?.commit?.committer?.date ?? latest?.commit?.author?.date ?? null;
+}
+
+async function asyncPool<T>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<void>
+) {
+  const executing = new Set<Promise<void>>();
+
+  for (const item of items) {
+    const promise = task(item).finally(() => executing.delete(promise));
+    executing.add(promise);
+
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+
+  await Promise.all(executing);
+}
+
+function sortIssues(left: Issue, right: Issue) {
+  if (left.comments !== right.comments) {
+    return left.comments - right.comments;
+  }
+
+  return getTime(right.lastCommitAt) - getTime(left.lastCommitAt);
+}
+
+function getTime(value: string | null) {
+  if (!value) {
+    return 0;
+  }
+
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function getGitHubHeaders(token?: string) {
+  const headers: HeadersInit = {
+    Accept: "application/vnd.github.v3+json",
+    ...requestHeaders
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
 }
 
 function shouldIncludeIssue(issue: NormalizedIssue, filters: FilterState) {

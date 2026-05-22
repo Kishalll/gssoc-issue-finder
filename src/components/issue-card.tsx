@@ -1,4 +1,4 @@
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, GitCommitHorizontal } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import type { Issue } from "@/lib/types";
@@ -20,6 +20,13 @@ export function IssueCard({ issue }: IssueCardProps) {
         <span>{issue.title}</span>
         <ExternalLink className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
       </a>
+
+      <div className="mt-3">
+        <Badge variant="secondary" className="gap-1.5">
+          <GitCommitHorizontal className="h-3.5 w-3.5" />
+          Last commit {issue.lastCommitAt ? formatRelativeTime(issue.lastCommitAt) : "unknown"}
+        </Badge>
+      </div>
 
       {issue.labels.length > 0 ? (
         <div className="mt-3 flex flex-wrap gap-1.5">

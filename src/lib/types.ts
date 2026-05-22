@@ -12,6 +12,7 @@ export interface Issue {
   labels: Label[];
   url: string;
   createdAt: string;
+  lastCommitAt: string | null;
 }
 
 export interface FilterState {
