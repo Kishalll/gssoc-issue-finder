@@ -1,0 +1,118 @@
+"use client";
+
+import * as React from "react";
+
+import { EmptyState } from "@/components/empty-state";
+import { FilterBar } from "@/components/filter-bar";
+import { Header } from "@/components/header";
+import { IssueList } from "@/components/issue-list";
+import { LoadingSkeleton } from "@/components/loading-skeleton";
+import { SearchBar } from "@/components/search-bar";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { PAGE_SIZE } from "@/lib/constants";
+import { useIssues } from "@/hooks/use-issues";
+
+export default function Home() {
+  const {
+    issues,
+    allIssues,
+    loading,
+    error,
+    filters,
+    setFilters,
+    searchQuery,
+    setSearchQuery,
+    fetchIssues
+  } = useIssues();
+  const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
+  const [hasSearched, setHasSearched] = React.useState(false);
+
+  const visibleIssues = issues.slice(0, visibleCount);
+  const hasMore = visibleCount < issues.length;
+
+  const handleSearch = async () => {
+    setHasSearched(true);
+    setVisibleCount(PAGE_SIZE);
+    await fetchIssues();
+  };
+
+  React.useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [searchQuery]);
+
+  return (
+    <div className="min-h-[100dvh] bg-background">
+      <Header />
+      <main className="container py-8 md:py-10">
+        <section className="mb-7 max-w-3xl">
+          <p className="text-sm font-medium uppercase tracking-[0.14em] text-primary">
+            GSSoC 2026 contributor tool
+          </p>
+          <h1 className="mt-3 text-3xl font-bold tracking-tight text-balance md:text-4xl">
+            Find open GSSoC issues that need an owner.
+          </h1>
+          <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
+            Pull the latest approved-project issues, filter by useful labels, then search locally
+            across the results without another network call.
+          </p>
+        </section>
+
+        <Card className="mb-8 shadow-soft">
+          <CardContent className="space-y-5 p-5 md:p-6">
+            <SearchBar
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder="Search issues by title, description, or repo name..."
+            />
+            <FilterBar
+              filters={filters}
+              onFilterChange={setFilters}
+              onSearch={handleSearch}
+              isLoading={loading}
+            />
+          </CardContent>
+        </Card>
+
+        {error ? (
+          <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            Found {issues.length} unassigned issues with gssoc26 label
+            {searchQuery ? ` (${allIssues.length} before local search)` : ""}
+          </p>
+          {hasSearched && allIssues.length > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Showing {Math.min(visibleCount, issues.length)} of {issues.length}
+            </p>
+          ) : null}
+        </div>
+
+        {loading ? (
+          <LoadingSkeleton />
+        ) : hasSearched ? (
+          <>
+            <IssueList issues={visibleIssues} />
+            {hasMore ? (
+              <div className="mt-6 flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+                >
+                  Load More
+                </Button>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <EmptyState description="Click Search to fetch open, unassigned GSSoC issues" />
+        )}
+      </main>
+    </div>
+  );
+}
