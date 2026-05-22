@@ -1,6 +1,6 @@
 # GSSoC Issue Finder
 
-Small Next.js app for finding open, unassigned GitHub issues labelled for GSSoC 2026.
+App for finding open, unassigned GitHub issues labelled for GSSoC 2026.
 
 ## Tech Stack
 
@@ -54,9 +54,10 @@ Open:
 http://localhost:3000
 ```
 
-## Checks
+## ToDo
 
-```bash
-npm run lint
-npm run build
-```
+- [ ] make tags abd text clearly visible in dark mode
+- [ ] add more search filters
+- [ ] filter by repo repos w max open issues at top of filter list
+- [ ] add load all pages w pages nums at bottom instead of load more
+
