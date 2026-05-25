@@ -1,6 +1,6 @@
 # GSSoC Issue Finder
 
-App for finding open, unassigned GitHub issues labelled for GSSoC 2026.
+App for finding open, unassigned GitHub issues labelled for GSSoC 2026 from Verified GSSoC Repos.
 
 ## Tech Stack
 
@@ -61,6 +61,7 @@ http://localhost:3000
 
 ## ToDo
 
+- [ ] add a blacklist for issues and repos whch shd not be visible in next searches - list in interfce and 2 buttons for each issue (if repo is blacklisted all isues corresponding to the repo shd be blacklisted irt)
 - [ ] make tags(colours) abd text clearly visible in dark mode
 - [ ] add more search filters
 - [ ] filter by repo repos w max open issues at top of filter list
