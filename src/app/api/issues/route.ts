@@ -4,6 +4,7 @@ import {
   EXCLUDED_LABELS,
   GSSOC_ISSUES_URL,
   GSSOC_LABEL_VARIANTS,
+  GSSOC_PROJECTS_URL,
   PARENT_ISSUE_LABELS
 } from "@/lib/constants";
 import type { ApiResponse, FilterState, Issue, Label } from "@/lib/types";
@@ -38,6 +39,19 @@ type GitHubSearchResponse = {
   items: GitHubIssueItem[];
 };
 
+type GssocProject = {
+  repo_url?: string;
+  owner_repo?: string;
+  gh?: {
+    last_push?: string;
+    open_issues?: number;
+  };
+};
+
+type GssocProjectsResponse = {
+  projects?: GssocProject[];
+};
+
 type GitHubCommitResponseItem = {
   commit?: {
     author?: {
@@ -53,6 +67,8 @@ const requestHeaders = {
   "User-Agent": "GSSoC-Issue-Finder/1.0"
 };
 
+const OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY = 4;
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const filters: FilterState = {
@@ -61,12 +77,37 @@ export async function GET(request: Request) {
   };
 
   const errors: unknown[] = [];
+  let officialProjects: Map<string, GssocProject> | null = null;
+
+  try {
+    officialProjects = await fetchOfficialProjects();
+  } catch (error) {
+    errors.push(error);
+    console.error("Failed to fetch official GSSoC projects", error);
+  }
+
+  try {
+    if (!officialProjects || officialProjects.size === 0) {
+      throw new Error("Official project allowlist is unavailable");
+    }
+
+    const officialIssues = await fetchOfficialProjectIssues(officialProjects, filters);
+
+    if (officialIssues.length > 0) {
+      return NextResponse.json(await toApiResponse(officialIssues, filters));
+    }
+  } catch (error) {
+    errors.push(error);
+    console.warn(
+      `Official project issue fetch unavailable: ${error instanceof Error ? error.message : String(error)}. Trying GSSoC issue page.`
+    );
+  }
 
   try {
     const scrapedIssues = await scrapeGssocIssues();
 
     if (scrapedIssues.length > 0) {
-      return NextResponse.json(await toApiResponse(scrapedIssues, filters));
+      return NextResponse.json(await toApiResponse(filterOfficialIssues(scrapedIssues, officialProjects), filters));
     }
   } catch (error) {
     errors.push(error);
@@ -77,7 +118,7 @@ export async function GET(request: Request) {
 
   try {
     const githubIssues = await fetchGitHubIssues(filters);
-    return NextResponse.json(await toApiResponse(githubIssues, filters));
+    return NextResponse.json(await toApiResponse(filterOfficialIssues(githubIssues, officialProjects), filters));
   } catch (error) {
     errors.push(error);
     console.error("GitHub issue search failed", error);
@@ -89,6 +130,149 @@ export async function GET(request: Request) {
     { error: "Failed to fetch issues", issues: [], total: 0 },
     { status: 500 }
   );
+}
+
+async function fetchOfficialProjects() {
+  const response = await fetch(GSSOC_PROJECTS_URL, {
+    headers: requestHeaders,
+    next: { revalidate: 300 }
+  });
+
+  if (!response.ok) {
+    throw new Error(`GSSoC projects API returned ${response.status}`);
+  }
+
+  const data = (await response.json()) as GssocProjectsResponse;
+  const projects = data.projects ?? [];
+  const projectMap = new Map<string, GssocProject>();
+
+  for (const project of projects) {
+    const repoName = normalizeRepoName(project.owner_repo) ?? extractRepoName(project.repo_url ?? "");
+
+    if (repoName) {
+      projectMap.set(repoName, project);
+    }
+  }
+
+  console.info(`Loaded ${projectMap.size} official GSSoC projects`);
+  return projectMap;
+}
+
+async function fetchOfficialProjectIssues(
+  officialProjects: Map<string, GssocProject>,
+  filters: FilterState
+) {
+  const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
+
+  if (!token) {
+    throw new Error("Full official-repo search requires NEXT_PUBLIC_GITHUB_PAT to avoid GitHub Search API rate limits");
+  }
+
+  const repos = Array.from(officialProjects.entries())
+    .filter(([, project]) => (project.gh?.open_issues ?? 1) > 0);
+  const results: NormalizedIssue[][] = [];
+
+  await asyncPool(repos, OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY, async ([repoName, project]) => {
+    results.push(await fetchRepoIssues(repoName, project, filters, token));
+  });
+
+  return dedupeIssues(results.flat());
+}
+
+async function fetchRepoIssues(
+  repoName: string,
+  project: GssocProject,
+  filters: FilterState,
+  token: string
+) {
+  const firstPage = await fetchRepoIssuePage(repoName, filters, token, 1);
+  const linkHeader = firstPage.linkHeader;
+  const lastPage = Math.min(getLastPageFromLinkHeader(linkHeader) ?? 1, 10);
+  const remainingPages = Array.from({ length: Math.max(lastPage - 1, 0) }, (_, index) => index + 2);
+  const remainingItems = await Promise.all(
+    remainingPages.map((page) => fetchRepoIssuePage(repoName, filters, token, page).then((result) => result.items))
+  );
+
+  return [firstPage.items, ...remainingItems].flat().map((item) => ({
+    ...mapGitHubIssue(item),
+    repoName,
+    lastCommitAt: project.gh?.last_push ?? null
+  }));
+}
+
+async function fetchRepoIssuePage(
+  repoName: string,
+  filters: FilterState,
+  token: string,
+  page: number
+) {
+  const [owner, repo] = repoName.split("/");
+  const url = new URL(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`
+  );
+  url.searchParams.set("state", "open");
+  url.searchParams.set("assignee", "none");
+  url.searchParams.set("labels", buildRepoIssueLabels(filters));
+  url.searchParams.set("sort", "comments");
+  url.searchParams.set("direction", "asc");
+  url.searchParams.set("per_page", "100");
+  url.searchParams.set("page", String(page));
+
+  const response = await fetch(url, {
+    headers: getGitHubHeaders(token),
+    next: { revalidate: 300 }
+  });
+
+  if (!response.ok) {
+    const message = await getGitHubErrorMessage(response);
+    console.warn(`Could not fetch issues for ${repoName}: ${response.status} ${message}`);
+    return { items: [], linkHeader: null };
+  }
+
+  return {
+    items: (await response.json()) as GitHubIssueItem[],
+    linkHeader: response.headers.get("link")
+  };
+}
+
+function buildRepoIssueLabels(filters: FilterState) {
+  const labels = ["gssoc26"];
+
+  if (filters.level) {
+    labels.push(`level:${filters.level}`);
+  }
+
+  if (filters.type) {
+    labels.push(`type:${filters.type}`);
+  }
+
+  return labels.join(",");
+}
+
+function filterOfficialIssues(
+  issues: NormalizedIssue[],
+  officialProjects: Map<string, GssocProject> | null
+) {
+  if (!officialProjects || officialProjects.size === 0) {
+    return [];
+  }
+
+  return issues
+    .map((issue) => {
+      const repoName = normalizeRepoName(issue.repoName);
+      const officialProject = repoName ? officialProjects.get(repoName) : null;
+
+      if (!repoName || !officialProject) {
+        return null;
+      }
+
+      return {
+        ...issue,
+        repoName,
+        lastCommitAt: issue.lastCommitAt ?? officialProject.gh?.last_push ?? null
+      };
+    })
+    .filter((issue): issue is NormalizedIssue => issue !== null);
 }
 
 async function scrapeGssocIssues() {
@@ -254,20 +438,23 @@ async function fetchGitHubSearchPage(filters: FilterState, page: number) {
     queryParts.push(`label:"type:${filters.type}"`);
   }
 
+  return fetchGitHubSearchUrl(queryParts, page);
+}
+
+async function fetchGitHubSearchUrl(queryParts: string[], page: number, token?: string) {
   const url = new URL("https://api.github.com/search/issues");
   url.searchParams.set("q", queryParts.join(" "));
   url.searchParams.set("sort", "comments");
   url.searchParams.set("order", "asc");
   url.searchParams.set("per_page", "100");
   url.searchParams.set("page", String(page));
-
-  const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
-  const headers = getGitHubHeaders(token);
-
+  const headers = getGitHubHeaders(token ?? process.env.NEXT_PUBLIC_GITHUB_PAT?.trim());
   const response = await fetch(url, { headers });
 
   if (!response.ok) {
-    throw new Error(`GitHub search returned ${response.status}`);
+    throw new Error(
+      `GitHub search returned ${response.status}: ${await getGitHubErrorMessage(response)}`
+    );
   }
 
   return (await response.json()) as GitHubSearchResponse;
@@ -373,6 +560,39 @@ async function asyncPool<T>(
   }
 
   await Promise.all(executing);
+}
+
+function chunkArray<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
+function getLastPageFromLinkHeader(linkHeader: string | null) {
+  if (!linkHeader) {
+    return null;
+  }
+
+  const lastLink = linkHeader
+    .split(",")
+    .map((part) => part.trim())
+    .find((part) => part.includes('rel="last"'));
+  const pageMatch = lastLink?.match(/[?&]page=(\d+)/);
+
+  return pageMatch ? Number(pageMatch[1]) : null;
+}
+
+async function getGitHubErrorMessage(response: Response) {
+  try {
+    const body = (await response.clone().json()) as { message?: string };
+    return body.message ?? response.statusText;
+  } catch {
+    return response.statusText;
+  }
 }
 
 function sortIssues(left: Issue, right: Issue) {
@@ -498,6 +718,12 @@ function dedupeIssues(issues: NormalizedIssue[]) {
 }
 
 function extractRepoName(url: string) {
+  const normalized = normalizeRepoName(url);
+
+  if (normalized) {
+    return normalized;
+  }
+
   const cleaned = url.replace(/\/+$/, "");
   const parts = cleaned.split("/");
   const githubHostIndex = parts.findIndex((part) => part === "github.com");
@@ -526,6 +752,27 @@ function extractRepoName(url: string) {
   }
 
   return `${owner}/${repo}`;
+}
+
+function normalizeRepoName(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const cleaned = value
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/^git@github\.com:/i, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  const parts = cleaned.split("/");
+
+  if (parts.length < 2 || !parts[0] || !parts[1]) {
+    return null;
+  }
+
+  return `${parts[0]}/${parts[1]}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -28,4 +28,6 @@ export const PARENT_ISSUE_LABELS = ["parent", "epic", "roadmap", "tracking", "me
 
 export const GSSOC_ISSUES_URL = "https://gssoc.girlscript.org/issues";
 
+export const GSSOC_PROJECTS_URL = "https://gssoc.girlscript.org/api/projects";
+
 export const PAGE_SIZE = 50;

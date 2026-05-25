@@ -15,7 +15,7 @@ App for finding open, unassigned GitHub issues labelled for GSSoC 2026.
 
 - Node.js 18.17 or newer
 - npm
-- Optional: GitHub personal access token for higher GitHub API rate limits
+- GitHub personal access token recommended for complete results
 
 ## Setup
 
@@ -31,12 +31,17 @@ Create or update `.env.local`:
 NEXT_PUBLIC_GITHUB_PAT=
 ```
 
-The token is optional. If you add one, it is only used by the fallback GitHub API request.
+The token lets the app search across all 313 official GSSoC project repos without hitting GitHub's low unauthenticated search limit. Without a token, results are still filtered to official repos, but GitHub may return fewer results or rate-limit requests. The official project list is loaded from `https://gssoc.girlscript.org/api/projects`.
 
-For public repositories, use a fine-grained GitHub token with:
+For a classic GitHub token:
+
+- Leave all scopes unchecked.
+- Do not select `repo`, `public_repo`, `workflow`, `project`, `user`, or any admin/write scope.
+
+For a fine-grained GitHub token:
 
 - Repository access: public repositories only
-- Permissions: read-only metadata access
+- Permissions: read-only metadata access only
 
 Do not add write permissions, admin permissions, workflow permissions, or access to private repositories.
 
@@ -61,4 +66,3 @@ http://localhost:3000
 - [ ] filter by repo repos w max open issues at top of filter list
 - [ ] add load all pages w pages nums at bottom instead of load more
 - [ ] automate searching by refreshing search every 30 mins and send mail or sms if user preferred type of issues come up 
-
