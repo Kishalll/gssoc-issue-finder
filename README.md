@@ -61,7 +61,8 @@ http://localhost:3000
 
 ## ToDo
 
-- [ ] add a blacklist for issues and repos whch shd not be visible in next searches - list in interfce and 2 buttons for each issue (if repo is blacklisted all isues corresponding to the repo shd be blacklisted irt)
+- [x] add a blacklist for issues and repos whch shd not be visible in next searches - list in interfce and 2 buttons for each issue (if repo is blacklisted all isues corresponding to the repo shd be blacklisted irt)
+- [ ] add seperate menus for browse and blacklist
 - [ ] make tags(colours) abd text clearly visible in dark mode
 - [ ] add more search filters
 - [ ] filter by repo repos w max open issues at top of filter list
