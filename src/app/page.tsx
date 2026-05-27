@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { BlacklistPanel } from "@/components/blacklist-panel";
 import { EmptyState } from "@/components/empty-state";
 import { FilterBar } from "@/components/filter-bar";
 import { Header } from "@/components/header";
@@ -10,8 +11,9 @@ import { LoadingSkeleton } from "@/components/loading-skeleton";
 import { SearchBar } from "@/components/search-bar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { PAGE_SIZE } from "@/lib/constants";
+import { useIssueBlacklist } from "@/hooks/use-issue-blacklist";
 import { useIssues } from "@/hooks/use-issues";
+import { PAGE_SIZE } from "@/lib/constants";
 
 export default function Home() {
   const {
@@ -25,11 +27,35 @@ export default function Home() {
     setSearchQuery,
     fetchIssues
   } = useIssues();
+  const { blacklist, hasLoaded, addRepo, removeRepo, addIssue, removeIssue } = useIssueBlacklist();
   const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
   const [hasSearched, setHasSearched] = React.useState(false);
 
-  const visibleIssues = issues.slice(0, visibleCount);
-  const hasMore = visibleCount < issues.length;
+  const blacklistedRepos = React.useMemo(() => new Set(blacklist.repos), [blacklist.repos]);
+  const blacklistedIssueIds = React.useMemo(
+    () => new Set(blacklist.issues.map((issue) => issue.id)),
+    [blacklist.issues]
+  );
+
+  const visibleIssues = React.useMemo(
+    () =>
+      issues.filter(
+        (issue) => !blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id)
+      ),
+    [issues, blacklistedIssueIds, blacklistedRepos]
+  );
+
+  const visibleAllIssues = React.useMemo(
+    () =>
+      allIssues.filter(
+        (issue) => !blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id)
+      ),
+    [allIssues, blacklistedIssueIds, blacklistedRepos]
+  );
+
+  const paginatedIssues = visibleIssues.slice(0, visibleCount);
+  const hiddenCount = allIssues.length - visibleAllIssues.length;
+  const hasMore = visibleCount < visibleIssues.length;
 
   const handleSearch = async () => {
     setHasSearched(true);
@@ -71,6 +97,13 @@ export default function Home() {
               onSearch={handleSearch}
               isLoading={loading}
             />
+            {hasLoaded ? (
+              <BlacklistPanel
+                blacklist={blacklist}
+                onRemoveRepo={removeRepo}
+                onRemoveIssue={removeIssue}
+              />
+            ) : null}
           </CardContent>
         </Card>
 
@@ -82,12 +115,13 @@ export default function Home() {
 
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            Found {issues.length} unassigned issues with gssoc26 label
-            {searchQuery ? ` (${allIssues.length} before local search)` : ""}
+            Found {visibleIssues.length} unassigned issues with gssoc26 label
+            {searchQuery ? ` (${visibleAllIssues.length} before local search)` : ""}
+            {hiddenCount > 0 ? ` • ${hiddenCount} hidden by blacklist` : ""}
           </p>
           {hasSearched && allIssues.length > 0 ? (
             <p className="text-sm text-muted-foreground">
-              Showing {Math.min(visibleCount, issues.length)} of {issues.length}
+              Showing {Math.min(visibleCount, visibleIssues.length)} of {visibleIssues.length}
             </p>
           ) : null}
         </div>
@@ -96,7 +130,13 @@ export default function Home() {
           <LoadingSkeleton />
         ) : hasSearched ? (
           <>
-            <IssueList issues={visibleIssues} />
+            <IssueList
+              issues={paginatedIssues}
+              onBlacklistIssue={addIssue}
+              onBlacklistRepo={addRepo}
+              blacklistedIssueIds={blacklistedIssueIds}
+              blacklistedRepos={blacklistedRepos}
+            />
             {hasMore ? (
               <div className="mt-6 flex justify-center">
                 <Button

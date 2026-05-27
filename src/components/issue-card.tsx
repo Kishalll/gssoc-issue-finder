@@ -1,14 +1,25 @@
-import { ExternalLink, GitCommitHorizontal } from "lucide-react";
+import { Ban, ExternalLink, FolderX, GitCommitHorizontal } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { Issue } from "@/lib/types";
 import { formatRelativeTime, getContrastTextColor } from "@/lib/utils";
 
 interface IssueCardProps {
   issue: Issue;
+  onBlacklistIssue: (issue: Issue) => void;
+  onBlacklistRepo: (repoName: string) => void;
+  isRepoBlacklisted: boolean;
+  isIssueBlacklisted: boolean;
 }
 
-export function IssueCard({ issue }: IssueCardProps) {
+export function IssueCard({
+  issue,
+  onBlacklistIssue,
+  onBlacklistRepo,
+  isRepoBlacklisted,
+  isIssueBlacklisted
+}: IssueCardProps) {
   return (
     <article className="rounded-lg border bg-card p-4 shadow-sm transition-all duration-200 ease-out hover:-translate-y-0.5 hover:shadow-soft">
       <a
@@ -56,6 +67,31 @@ export function IssueCard({ issue }: IssueCardProps) {
         {issue.repoName} <span aria-hidden="true">•</span> {issue.comments} comments{" "}
         <span aria-hidden="true">•</span> {formatRelativeTime(issue.createdAt)}
       </p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => onBlacklistIssue(issue)}
+          disabled={isRepoBlacklisted || isIssueBlacklisted}
+        >
+          <Ban className="h-4 w-4" />
+          {isIssueBlacklisted ? "Issue blacklisted" : "Blacklist issue"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => onBlacklistRepo(issue.repoName)}
+          disabled={isRepoBlacklisted}
+        >
+          <FolderX className="h-4 w-4" />
+          {isRepoBlacklisted ? "Repo blacklisted" : "Blacklist repo"}
+        </Button>
+      </div>
     </article>
   );
 }

@@ -24,3 +24,14 @@ export interface ApiResponse {
   issues: Issue[];
   total: number;
 }
+
+export interface BlacklistedIssue {
+  id: string;
+  title: string;
+  repoName: string;
+}
+
+export interface BlacklistState {
+  repos: string[];
+  issues: BlacklistedIssue[];
+}
