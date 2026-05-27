@@ -25,6 +25,43 @@ export interface ApiResponse {
   total: number;
 }
 
+export interface IssueProgressState {
+  loadedRepos: number;
+  totalRepos: number;
+  searchableRepos: number;
+}
+
+export type IssueStreamEvent =
+  | {
+      type: "status";
+      message: string;
+    }
+  | {
+      type: "progress";
+      message: string;
+      loadedRepos: number;
+      totalRepos: number;
+      searchableRepos: number;
+      issues: Issue[];
+    }
+  | {
+      type: "complete";
+      message: string;
+      loadedRepos: number;
+      totalRepos: number;
+      searchableRepos: number;
+      issues: Issue[];
+      total: number;
+    }
+  | {
+      type: "fallback";
+      message: string;
+    }
+  | {
+      type: "error";
+      message: string;
+    };
+
 export interface BlacklistedIssue {
   id: string;
   title: string;

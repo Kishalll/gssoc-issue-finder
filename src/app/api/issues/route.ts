@@ -75,6 +75,11 @@ export async function GET(request: Request) {
     level: searchParams.get("level") ?? "",
     type: searchParams.get("type") ?? ""
   };
+  const shouldStream = searchParams.get("stream") === "1";
+
+  if (shouldStream) {
+    return streamIssues(request, filters);
+  }
 
   const errors: unknown[] = [];
   let officialProjects: Map<string, GssocProject> | null = null;
@@ -132,10 +137,122 @@ export async function GET(request: Request) {
   );
 }
 
-async function fetchOfficialProjects() {
+async function streamIssues(request: Request, filters: FilterState) {
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (payload: object) => {
+        controller.enqueue(encoder.encode(`${JSON.stringify(payload)}\n`));
+      };
+
+      try {
+        send({
+          type: "status",
+          message: "Loading official GSSoC repos and matching issues. Please wait."
+        });
+
+        const officialProjects = await fetchOfficialProjects(request.signal);
+
+        if (request.signal.aborted) {
+          controller.close();
+          return;
+        }
+
+        send({
+          type: "status",
+          message: `Loaded ${officialProjects.size} official repos. Starting repo scan...`
+        });
+
+        const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
+
+        if (!token) {
+          send({
+            type: "fallback",
+            message: "GitHub token missing. Falling back to slower aggregate search."
+          });
+
+          const githubIssues = await fetchGitHubIssues(filters, request.signal);
+          const response = await toApiResponse(filterOfficialIssues(githubIssues, officialProjects), filters, request.signal);
+          send({
+            type: "complete",
+            message: "Search complete.",
+            loadedRepos: officialProjects.size,
+            totalRepos: officialProjects.size,
+            searchableRepos: officialProjects.size,
+            issues: response.issues,
+            total: response.total
+          });
+          controller.close();
+          return;
+        }
+
+        const repos = Array.from(officialProjects.entries()).filter(
+          ([, project]) => (project.gh?.open_issues ?? 1) > 0
+        );
+        const collectedIssues: NormalizedIssue[] = [];
+        const searchableRepos = repos.length;
+        let loadedRepos = officialProjects.size - searchableRepos;
+
+        await asyncPool(repos, OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY, async ([repoName, project]) => {
+          if (request.signal.aborted) {
+            throw new Error("Request aborted");
+          }
+
+          const repoIssues = await fetchRepoIssues(repoName, project, filters, token, request.signal);
+          const filteredRepoIssues = repoIssues.filter((issue) => shouldIncludeIssue(issue, filters));
+          collectedIssues.push(...filteredRepoIssues);
+          loadedRepos += 1;
+          const currentLoadedRepos = loadedRepos;
+
+          const prepared = await prepareIssues(collectedIssues, request.signal);
+
+          send({
+            type: "progress",
+            message: `Loaded ${currentLoadedRepos} of ${officialProjects.size} repos.`,
+            loadedRepos: currentLoadedRepos,
+            totalRepos: officialProjects.size,
+            searchableRepos,
+            issues: prepared
+          });
+        });
+
+        if (request.signal.aborted) {
+          controller.close();
+          return;
+        }
+
+        const response = await prepareApiResponse(collectedIssues, officialProjects.size, searchableRepos, request.signal);
+        send(response);
+        controller.close();
+      } catch (error) {
+        if (!request.signal.aborted) {
+          console.error("Issue stream failed", error);
+          send({
+            type: "error",
+            message: error instanceof Error ? error.message : "Failed to fetch issues"
+          });
+        }
+
+        controller.close();
+      }
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive"
+    }
+  });
+}
+
+async function fetchOfficialProjects(signal?: AbortSignal) {
   const response = await fetch(GSSOC_PROJECTS_URL, {
     headers: requestHeaders,
-    next: { revalidate: 300 }
+    next: { revalidate: 300 },
+    signal
   });
 
   if (!response.ok) {
@@ -160,7 +277,8 @@ async function fetchOfficialProjects() {
 
 async function fetchOfficialProjectIssues(
   officialProjects: Map<string, GssocProject>,
-  filters: FilterState
+  filters: FilterState,
+  signal?: AbortSignal
 ) {
   const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
 
@@ -173,7 +291,7 @@ async function fetchOfficialProjectIssues(
   const results: NormalizedIssue[][] = [];
 
   await asyncPool(repos, OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY, async ([repoName, project]) => {
-    results.push(await fetchRepoIssues(repoName, project, filters, token));
+    results.push(await fetchRepoIssues(repoName, project, filters, token, signal));
   });
 
   return dedupeIssues(results.flat());
@@ -183,14 +301,17 @@ async function fetchRepoIssues(
   repoName: string,
   project: GssocProject,
   filters: FilterState,
-  token: string
+  token: string,
+  signal?: AbortSignal
 ) {
-  const firstPage = await fetchRepoIssuePage(repoName, filters, token, 1);
+  const firstPage = await fetchRepoIssuePage(repoName, filters, token, 1, signal);
   const linkHeader = firstPage.linkHeader;
   const lastPage = Math.min(getLastPageFromLinkHeader(linkHeader) ?? 1, 10);
   const remainingPages = Array.from({ length: Math.max(lastPage - 1, 0) }, (_, index) => index + 2);
   const remainingItems = await Promise.all(
-    remainingPages.map((page) => fetchRepoIssuePage(repoName, filters, token, page).then((result) => result.items))
+    remainingPages.map((page) =>
+      fetchRepoIssuePage(repoName, filters, token, page, signal).then((result) => result.items)
+    )
   );
 
   return [firstPage.items, ...remainingItems].flat().map((item) => ({
@@ -204,7 +325,8 @@ async function fetchRepoIssuePage(
   repoName: string,
   filters: FilterState,
   token: string,
-  page: number
+  page: number,
+  signal?: AbortSignal
 ) {
   const [owner, repo] = repoName.split("/");
   const url = new URL(
@@ -220,7 +342,8 @@ async function fetchRepoIssuePage(
 
   const response = await fetch(url, {
     headers: getGitHubHeaders(token),
-    next: { revalidate: 300 }
+    next: { revalidate: 300 },
+    signal
   });
 
   if (!response.ok) {
@@ -414,12 +537,12 @@ function normalizeScrapedIssue(raw: unknown): NormalizedIssue | null {
   };
 }
 
-async function fetchGitHubIssues(filters: FilterState) {
-  const firstPage = await fetchGitHubSearchPage(filters, 1);
+async function fetchGitHubIssues(filters: FilterState, signal?: AbortSignal) {
+  const firstPage = await fetchGitHubSearchPage(filters, 1, signal);
   const totalPages = Math.min(Math.ceil(firstPage.total_count / 100), 10);
   const remainingPages = Array.from({ length: Math.max(totalPages - 1, 0) }, (_, index) => index + 2);
   const remainingResults = await Promise.all(
-    remainingPages.map((page) => fetchGitHubSearchPage(filters, page))
+    remainingPages.map((page) => fetchGitHubSearchPage(filters, page, signal))
   );
 
   return [firstPage, ...remainingResults].flatMap((result) =>
@@ -427,7 +550,7 @@ async function fetchGitHubIssues(filters: FilterState) {
   );
 }
 
-async function fetchGitHubSearchPage(filters: FilterState, page: number) {
+async function fetchGitHubSearchPage(filters: FilterState, page: number, signal?: AbortSignal) {
   const queryParts = ["label:gssoc26", "no:assignee", "state:open", "type:issue"];
 
   if (filters.level) {
@@ -438,10 +561,15 @@ async function fetchGitHubSearchPage(filters: FilterState, page: number) {
     queryParts.push(`label:"type:${filters.type}"`);
   }
 
-  return fetchGitHubSearchUrl(queryParts, page);
+  return fetchGitHubSearchUrl(queryParts, page, undefined, signal);
 }
 
-async function fetchGitHubSearchUrl(queryParts: string[], page: number, token?: string) {
+async function fetchGitHubSearchUrl(
+  queryParts: string[],
+  page: number,
+  token?: string,
+  signal?: AbortSignal
+) {
   const url = new URL("https://api.github.com/search/issues");
   url.searchParams.set("q", queryParts.join(" "));
   url.searchParams.set("sort", "comments");
@@ -449,7 +577,7 @@ async function fetchGitHubSearchUrl(queryParts: string[], page: number, token?: 
   url.searchParams.set("per_page", "100");
   url.searchParams.set("page", String(page));
   const headers = getGitHubHeaders(token ?? process.env.NEXT_PUBLIC_GITHUB_PAT?.trim());
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, { headers, signal });
 
   if (!response.ok) {
     throw new Error(
@@ -480,11 +608,15 @@ function mapGitHubIssue(item: GitHubIssueItem): NormalizedIssue {
   };
 }
 
-async function toApiResponse(issues: NormalizedIssue[], filters: FilterState): Promise<ApiResponse> {
+async function toApiResponse(
+  issues: NormalizedIssue[],
+  filters: FilterState,
+  signal?: AbortSignal
+): Promise<ApiResponse> {
   const filteredIssues = issues
     .filter((issue) => shouldIncludeIssue(issue, filters))
     .map(({ assignee: _assignee, assignees: _assignees, pullRequest: _pullRequest, ...issue }) => issue);
-  const issuesWithCommitDates = await enrichIssuesWithLastCommitDates(filteredIssues);
+  const issuesWithCommitDates = await enrichIssuesWithLastCommitDates(filteredIssues, signal);
   const filteredSortedIssues = issuesWithCommitDates.sort((left, right) => sortIssues(left, right));
 
   return {
@@ -493,7 +625,34 @@ async function toApiResponse(issues: NormalizedIssue[], filters: FilterState): P
   };
 }
 
-async function enrichIssuesWithLastCommitDates<T extends Issue>(issues: T[]) {
+async function prepareApiResponse(
+  issues: NormalizedIssue[],
+  totalRepos: number,
+  searchableRepos: number,
+  signal?: AbortSignal
+) {
+  const prepared = await prepareIssues(issues, signal);
+
+  return {
+    type: "complete" as const,
+    message: "Search complete.",
+    loadedRepos: searchableRepos,
+    totalRepos,
+    searchableRepos,
+    issues: prepared,
+    total: prepared.length
+  };
+}
+
+async function prepareIssues(issues: NormalizedIssue[], signal?: AbortSignal) {
+  const strippedIssues = dedupeIssues(issues).map(
+    ({ assignee: _assignee, assignees: _assignees, pullRequest: _pullRequest, ...issue }) => issue
+  );
+  const issuesWithCommitDates = await enrichIssuesWithLastCommitDates(strippedIssues, signal);
+  return issuesWithCommitDates.sort((left, right) => sortIssues(left, right));
+}
+
+async function enrichIssuesWithLastCommitDates<T extends Issue>(issues: T[], signal?: AbortSignal) {
   const missingRepoNames = Array.from(
     new Set(
       issues
@@ -511,7 +670,7 @@ async function enrichIssuesWithLastCommitDates<T extends Issue>(issues: T[]) {
   const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
 
   await asyncPool(missingRepoNames, 8, async (repoName) => {
-    repoDates.set(repoName, await fetchRepoLastCommitDate(repoName, token));
+    repoDates.set(repoName, await fetchRepoLastCommitDate(repoName, token, signal));
   });
 
   return issues.map((issue) => ({
@@ -520,7 +679,7 @@ async function enrichIssuesWithLastCommitDates<T extends Issue>(issues: T[]) {
   }));
 }
 
-async function fetchRepoLastCommitDate(repoName: string, token?: string) {
+async function fetchRepoLastCommitDate(repoName: string, token?: string, signal?: AbortSignal) {
   const [owner, repo] = repoName.split("/");
   const url = new URL(
     `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits`
@@ -529,7 +688,8 @@ async function fetchRepoLastCommitDate(repoName: string, token?: string) {
 
   const response = await fetch(url, {
     headers: getGitHubHeaders(token),
-    next: { revalidate: 300 }
+    next: { revalidate: 300 },
+    signal
   });
 
   if (!response.ok) {

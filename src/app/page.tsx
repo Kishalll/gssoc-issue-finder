@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { X } from "lucide-react";
 
 import { BlacklistPanel } from "@/components/blacklist-panel";
 import { EmptyState } from "@/components/empty-state";
@@ -20,16 +21,21 @@ export default function Home() {
     issues,
     allIssues,
     loading,
+    loadingStatus,
+    loadingSeconds,
+    progress,
     error,
     filters,
     setFilters,
     searchQuery,
     setSearchQuery,
-    fetchIssues
+    fetchIssues,
+    cancelFetch
   } = useIssues();
   const { blacklist, hasLoaded, addRepo, removeRepo, addIssue, removeIssue } = useIssueBlacklist();
   const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
   const [hasSearched, setHasSearched] = React.useState(false);
+  const [isStatusDismissed, setIsStatusDismissed] = React.useState(false);
 
   const blacklistedRepos = React.useMemo(() => new Set(blacklist.repos), [blacklist.repos]);
   const blacklistedIssueIds = React.useMemo(
@@ -67,6 +73,12 @@ export default function Home() {
     setVisibleCount(PAGE_SIZE);
   }, [searchQuery]);
 
+  React.useEffect(() => {
+    if (loadingStatus) {
+      setIsStatusDismissed(false);
+    }
+  }, [loadingStatus]);
+
   return (
     <div className="min-h-[100dvh] bg-background">
       <Header />
@@ -95,6 +107,7 @@ export default function Home() {
               filters={filters}
               onFilterChange={setFilters}
               onSearch={handleSearch}
+              onCancel={cancelFetch}
               isLoading={loading}
             />
             {hasLoaded ? (
@@ -113,11 +126,30 @@ export default function Home() {
           </div>
         ) : null}
 
+        {!error && loadingStatus && !loading && !isStatusDismissed ? (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/40 px-4 py-3 text-sm text-foreground">
+            <span>{loadingStatus}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => setIsStatusDismissed(true)}
+              aria-label="Close status message"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : null}
+
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
             Found {visibleIssues.length} unassigned issues with gssoc26 label
             {searchQuery ? ` (${visibleAllIssues.length} before local search)` : ""}
             {hiddenCount > 0 ? ` • ${hiddenCount} hidden by blacklist` : ""}
+            {loading && progress.totalRepos > 0
+              ? ` • ${progress.loadedRepos} / ${progress.totalRepos} repos loaded`
+              : ""}
           </p>
           {hasSearched && allIssues.length > 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -127,7 +159,25 @@ export default function Home() {
         </div>
 
         {loading ? (
-          <LoadingSkeleton />
+          <>
+            <LoadingSkeleton
+              status={loadingStatus}
+              elapsedSeconds={loadingSeconds}
+              loadedRepos={progress.loadedRepos}
+              totalRepos={progress.totalRepos}
+            />
+            {paginatedIssues.length > 0 ? (
+              <div className="mt-6">
+                <IssueList
+                  issues={paginatedIssues}
+                  onBlacklistIssue={addIssue}
+                  onBlacklistRepo={addRepo}
+                  blacklistedIssueIds={blacklistedIssueIds}
+                  blacklistedRepos={blacklistedRepos}
+                />
+              </div>
+            ) : null}
+          </>
         ) : hasSearched ? (
           <>
             <IssueList
