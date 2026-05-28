@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import {
   EXCLUDED_LABELS,
   GSSOC_ISSUES_URL,
-  GSSOC_LABEL_VARIANTS,
   GSSOC_PROJECTS_URL,
   PARENT_ISSUE_LABELS
 } from "@/lib/constants";
@@ -63,11 +62,40 @@ type GitHubCommitResponseItem = {
   };
 };
 
+type RepoMetadata = {
+  updated_at: string;
+  pushed_at: string;
+  open_issues_count: number;
+  html_url: string;
+};
+
+type RepoIssueCacheEntry = {
+  lastFetchedAt: number;
+  lastActivityCheckedAt: number;
+  activityFingerprint: string;
+  issues: NormalizedIssue[];
+};
+
+type OfficialProjectCacheEntry = {
+  fetchedAt: number;
+  projects: Map<string, GssocProject>;
+};
+
+type RepoIssueCacheLookup = {
+  issues: NormalizedIssue[] | null;
+  metadata?: RepoMetadata;
+};
+
 const requestHeaders = {
   "User-Agent": "GSSoC-Issue-Finder/1.0"
 };
 
 const OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY = 4;
+const REPO_ISSUE_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
+const OFFICIAL_PROJECT_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
+const REPO_ACTIVITY_CHECK_MAX_AGE_MS = 2 * 60 * 1000;
+const repoIssueCache = new Map<string, RepoIssueCacheEntry>();
+let officialProjectCache: OfficialProjectCacheEntry | null = null;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -96,7 +124,7 @@ export async function GET(request: Request) {
       throw new Error("Official project allowlist is unavailable");
     }
 
-    const officialIssues = await fetchOfficialProjectIssues(officialProjects, filters);
+    const officialIssues = await fetchOfficialProjectIssues(officialProjects, request.signal);
 
     if (officialIssues.length > 0) {
       return NextResponse.json(await toApiResponse(officialIssues, filters));
@@ -190,22 +218,70 @@ async function streamIssues(request: Request, filters: FilterState) {
         const repos = Array.from(officialProjects.entries()).filter(
           ([, project]) => (project.gh?.open_issues ?? 1) > 0
         );
-        const collectedIssues: NormalizedIssue[] = [];
         const searchableRepos = repos.length;
+        const cachedIssues: NormalizedIssue[] = [];
+        const reposToFetch: Array<[string, GssocProject, RepoMetadata?]> = [];
+
+        send({
+          type: "status",
+          message: `Loaded ${officialProjects.size} official repos. Checking repo activity...`
+        });
+
         let loadedRepos = officialProjects.size - searchableRepos;
 
-        await asyncPool(repos, OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY, async ([repoName, project]) => {
+        await asyncPool(repos, 15, async ([repoName, project]) => {
+          if (request.signal.aborted) return;
+
+          const cached = await getCachedRepoIssues(repoName, token, request.signal);
+
+          if (cached.issues) {
+            cachedIssues.push(...cached.issues);
+            loadedRepos++;
+          } else {
+            reposToFetch.push([repoName, project, cached.metadata]);
+          }
+        });
+
+        if (request.signal.aborted) {
+          controller.close();
+          return;
+        }
+
+        const collectedIssues = [...cachedIssues];
+
+        if (cachedIssues.length > 0 || reposToFetch.length === 0) {
+          const prepared = await prepareIssues(
+            collectedIssues.filter((issue) => shouldIncludeIssue(issue, filters)),
+            request.signal
+          );
+
+          send({
+            type: "progress",
+            message:
+              reposToFetch.length > 0
+                ? `Loaded ${loadedRepos} of ${officialProjects.size} repos from cache. Fetching changed repos...`
+                : `Loaded ${loadedRepos} of ${officialProjects.size} repos from cache.`,
+            loadedRepos,
+            totalRepos: officialProjects.size,
+            searchableRepos,
+            issues: prepared
+          });
+        }
+
+        await asyncPool(reposToFetch, OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY, async ([repoName, project, metadata]) => {
           if (request.signal.aborted) {
             throw new Error("Request aborted");
           }
 
-          const repoIssues = await fetchRepoIssues(repoName, project, filters, token, request.signal);
-          const filteredRepoIssues = repoIssues.filter((issue) => shouldIncludeIssue(issue, filters));
-          collectedIssues.push(...filteredRepoIssues);
+          const repoIssues = await fetchAndCacheRepoIssues(repoName, project, token, request.signal, metadata);
+          collectedIssues.push(...repoIssues);
           loadedRepos += 1;
           const currentLoadedRepos = loadedRepos;
 
-          const prepared = await prepareIssues(collectedIssues, request.signal);
+          const prepared = await prepareIssues(
+            collectedIssues.filter((issue) => shouldIncludeIssue(issue, filters)),
+            request.signal
+          );
 
           send({
             type: "progress",
@@ -222,7 +298,12 @@ async function streamIssues(request: Request, filters: FilterState) {
           return;
         }
 
-        const response = await prepareApiResponse(collectedIssues, officialProjects.size, searchableRepos, request.signal);
+        const response = await prepareApiResponse(
+          collectedIssues.filter((issue) => shouldIncludeIssue(issue, filters)),
+          officialProjects.size,
+          searchableRepos,
+          request.signal
+        );
         send(response);
         controller.close();
       } catch (error) {
@@ -249,6 +330,13 @@ async function streamIssues(request: Request, filters: FilterState) {
 }
 
 async function fetchOfficialProjects(signal?: AbortSignal) {
+  if (
+    officialProjectCache &&
+    Date.now() - officialProjectCache.fetchedAt < OFFICIAL_PROJECT_CACHE_MAX_AGE_MS
+  ) {
+    return officialProjectCache.projects;
+  }
+
   const response = await fetch(GSSOC_PROJECTS_URL, {
     headers: requestHeaders,
     next: { revalidate: 300 },
@@ -262,29 +350,26 @@ async function fetchOfficialProjects(signal?: AbortSignal) {
   const data = (await response.json()) as GssocProjectsResponse;
   const projects = data.projects ?? [];
   const projectMap = new Map<string, GssocProject>();
-  const candidates: Array<[string, GssocProject]> = [];
 
   for (const project of projects) {
     const repoName = normalizeRepoName(project.owner_repo) ?? extractRepoName(project.repo_url ?? "");
 
     if (repoName) {
-      candidates.push([repoName, project]);
+      projectMap.set(repoName, project);
     }
   }
 
-  await asyncPool(candidates, 8, async ([repoName, project]) => {
-    if (await hasGssocProjectPage(repoName, signal)) {
-      projectMap.set(repoName, project);
-    }
-  });
+  officialProjectCache = {
+    fetchedAt: Date.now(),
+    projects: projectMap
+  };
 
-  console.info(`Loaded ${projectMap.size} official GSSoC projects with live project pages`);
+  console.info(`Loaded ${projectMap.size} official GSSoC projects`);
   return projectMap;
 }
 
 async function fetchOfficialProjectIssues(
   officialProjects: Map<string, GssocProject>,
-  filters: FilterState,
   signal?: AbortSignal
 ) {
   const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
@@ -298,30 +383,133 @@ async function fetchOfficialProjectIssues(
   const results: NormalizedIssue[][] = [];
 
   await asyncPool(repos, OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY, async ([repoName, project]) => {
-    results.push(await fetchRepoIssues(repoName, project, filters, token, signal));
+    results.push(await getOrFetchRepoIssues(repoName, project, token, signal));
   });
 
   return dedupeIssues(results.flat());
 }
 
-async function fetchRepoIssues(
+async function getOrFetchRepoIssues(
   repoName: string,
   project: GssocProject,
-  filters: FilterState,
   token: string,
   signal?: AbortSignal
 ) {
-  const firstPage = await fetchRepoIssuePage(repoName, filters, token, 1, signal);
-  const linkHeader = firstPage.linkHeader;
-  const lastPage = Math.min(getLastPageFromLinkHeader(linkHeader) ?? 1, 10);
-  const remainingPages = Array.from({ length: Math.max(lastPage - 1, 0) }, (_, index) => index + 2);
-  const remainingItems = await Promise.all(
-    remainingPages.map((page) =>
-      fetchRepoIssuePage(repoName, filters, token, page, signal).then((result) => result.items)
-    )
+  const cached = await getCachedRepoIssues(repoName, token, signal);
+
+  if (cached.issues) {
+    return cached.issues;
+  }
+
+  return fetchAndCacheRepoIssues(repoName, project, token, signal, cached.metadata);
+}
+
+async function fetchAndCacheRepoIssues(
+  repoName: string,
+  project: GssocProject,
+  token: string,
+  signal?: AbortSignal,
+  prefetchedMetadata?: RepoMetadata
+) {
+  const metadata = prefetchedMetadata ?? (await fetchRepoMetadata(repoName, token, signal));
+  const issues = await fetchRepoIssues(repoName, project, token, signal);
+
+  const fingerprint = metadata
+    ? `${metadata.updated_at}:${metadata.pushed_at}:${metadata.open_issues_count}`
+    : "unknown";
+
+  repoIssueCache.set(repoName, {
+    lastFetchedAt: Date.now(),
+    lastActivityCheckedAt: Date.now(),
+    activityFingerprint: fingerprint,
+    issues
+  });
+
+  return issues;
+}
+
+async function getCachedRepoIssues(
+  repoName: string,
+  token: string,
+  signal?: AbortSignal
+): Promise<RepoIssueCacheLookup> {
+  const cached = repoIssueCache.get(repoName);
+
+  if (!cached) {
+    return { issues: null };
+  }
+
+  const now = Date.now();
+  const isFresh = now - cached.lastFetchedAt < REPO_ISSUE_CACHE_MAX_AGE_MS;
+
+  if (!isFresh) {
+    repoIssueCache.delete(repoName);
+    return { issues: null };
+  }
+
+  const wasCheckedRecently = now - cached.lastActivityCheckedAt < REPO_ACTIVITY_CHECK_MAX_AGE_MS;
+
+  if (wasCheckedRecently) {
+    return { issues: cached.issues };
+  }
+
+  const metadata = await fetchRepoMetadata(repoName, token, signal);
+
+  if (!metadata) {
+    return { issues: null };
+  }
+
+  const fingerprint = `${metadata.updated_at}:${metadata.pushed_at}:${metadata.open_issues_count}`;
+
+  if (cached.activityFingerprint !== fingerprint) {
+    return { issues: null, metadata };
+  }
+
+  cached.lastActivityCheckedAt = now;
+  return { issues: cached.issues };
+}
+
+async function fetchRepoMetadata(repoName: string, token?: string, signal?: AbortSignal) {
+  const [owner, repo] = repoName.split("/");
+  const url = new URL(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
   );
 
-  return [firstPage.items, ...remainingItems].flat().map((item) => ({
+  const response = await fetch(url, {
+    headers: getGitHubHeaders(token),
+    cache: "no-store",
+    signal
+  });
+
+  if (!response.ok) {
+    const message = await getGitHubErrorMessage(response);
+    console.warn(`Could not fetch metadata for ${repoName}: ${response.status} ${message}`);
+    return null;
+  }
+
+  return (await response.json()) as RepoMetadata;
+}
+
+async function fetchRepoIssues(
+  repoName: string,
+  project: GssocProject,
+  token: string,
+  signal?: AbortSignal
+) {
+  const allItems: GitHubIssueItem[] = [];
+  let page = 1;
+
+  while (page) {
+    if (signal?.aborted) {
+      throw new Error("Request aborted");
+    }
+
+    const result = await fetchRepoIssuePage(repoName, token, page, signal);
+    allItems.push(...result.items);
+    page = getNextPageFromLinkHeader(result.linkHeader) ?? 0;
+  }
+
+  return allItems.map((item) => ({
     ...mapGitHubIssue(item),
     repoName,
     gssocProjectUrl: getGssocProjectUrl(repoName),
@@ -331,7 +519,6 @@ async function fetchRepoIssues(
 
 async function fetchRepoIssuePage(
   repoName: string,
-  filters: FilterState,
   token: string,
   page: number,
   signal?: AbortSignal
@@ -342,7 +529,6 @@ async function fetchRepoIssuePage(
   );
   url.searchParams.set("state", "open");
   url.searchParams.set("assignee", "none");
-  url.searchParams.set("labels", buildRepoIssueLabels(filters));
   url.searchParams.set("sort", "comments");
   url.searchParams.set("direction", "asc");
   url.searchParams.set("per_page", "100");
@@ -364,20 +550,6 @@ async function fetchRepoIssuePage(
     items: (await response.json()) as GitHubIssueItem[],
     linkHeader: response.headers.get("link")
   };
-}
-
-function buildRepoIssueLabels(filters: FilterState) {
-  const labels = ["gssoc26"];
-
-  if (filters.level) {
-    labels.push(`level:${filters.level}`);
-  }
-
-  if (filters.type) {
-    labels.push(`type:${filters.type}`);
-  }
-
-  return labels.join(",");
 }
 
 function filterOfficialIssues(
@@ -647,7 +819,7 @@ async function prepareApiResponse(
   return {
     type: "complete" as const,
     message: "Search complete.",
-    loadedRepos: searchableRepos,
+    loadedRepos: totalRepos,
     totalRepos,
     searchableRepos,
     issues: prepared,
@@ -733,26 +905,16 @@ async function asyncPool<T>(
   await Promise.all(executing);
 }
 
-function chunkArray<T>(items: T[], size: number) {
-  const chunks: T[][] = [];
-
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size));
-  }
-
-  return chunks;
-}
-
-function getLastPageFromLinkHeader(linkHeader: string | null) {
+function getNextPageFromLinkHeader(linkHeader: string | null) {
   if (!linkHeader) {
     return null;
   }
 
-  const lastLink = linkHeader
+  const nextLink = linkHeader
     .split(",")
     .map((part) => part.trim())
-    .find((part) => part.includes('rel="last"'));
-  const pageMatch = lastLink?.match(/[?&]page=(\d+)/);
+    .find((part) => part.includes('rel="next"'));
+  const pageMatch = nextLink?.match(/[?&]page=(\d+)/);
 
   return pageMatch ? Number(pageMatch[1]) : null;
 }
@@ -802,9 +964,6 @@ function shouldIncludeIssue(issue: NormalizedIssue, filters: FilterState) {
     EXCLUDED_LABELS.some((excluded) => labelName.includes(excluded))
   );
   const isParentIssue = isParentOrTrackingIssue(issue, labelNames);
-  const hasGssocLabel = labelNames.some((labelName) =>
-    GSSOC_LABEL_VARIANTS.some((variant) => labelName.includes(variant))
-  );
   const hasAssignee =
     Boolean(issue.assignee) || (Array.isArray(issue.assignees) && issue.assignees.length > 0);
   const isPullRequest = Boolean(issue.pullRequest) || issue.url.includes("/pull/");
@@ -818,7 +977,6 @@ function shouldIncludeIssue(issue: NormalizedIssue, filters: FilterState) {
   return (
     !hasExcludedLabel &&
     !isParentIssue &&
-    hasGssocLabel &&
     !hasAssignee &&
     !isPullRequest &&
     hasLevel &&
@@ -954,46 +1112,6 @@ function getGssocProjectUrl(repoName: string) {
   }
 
   return `https://gssoc.girlscript.org/projects/${encodeURIComponent(normalizedRepoName)}`;
-}
-
-async function hasGssocProjectPage(repoName: string, signal?: AbortSignal) {
-  const projectUrl = getGssocProjectUrl(repoName);
-
-  if (!projectUrl) {
-    return false;
-  }
-
-  try {
-    const response = await fetch(projectUrl, {
-      method: "HEAD",
-      headers: requestHeaders,
-      next: { revalidate: 300 },
-      signal
-    });
-
-    if (response.ok) {
-      return true;
-    }
-
-    if (response.status !== 405) {
-      return false;
-    }
-
-    const getResponse = await fetch(projectUrl, {
-      headers: requestHeaders,
-      next: { revalidate: 300 },
-      signal
-    });
-
-    return getResponse.ok;
-  } catch (error) {
-    if (signal?.aborted) {
-      throw error;
-    }
-
-    console.warn(`Could not verify GSSoC project page for ${repoName}`, error);
-    return false;
-  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
