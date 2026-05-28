@@ -1,4 +1,4 @@
-import { Ban, ExternalLink, FolderX, GitCommitHorizontal } from "lucide-react";
+import { Ban, ExternalLink, FolderCheck, FolderX, GitCommitHorizontal } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,6 +69,14 @@ export function IssueCard({
       </p>
 
       <div className="mt-4 flex flex-wrap gap-2">
+        {issue.gssocProjectUrl ? (
+          <Button type="button" variant="default" size="sm" className="gap-2" asChild>
+            <a href={issue.gssocProjectUrl} target="_blank" rel="noopener noreferrer">
+              <FolderCheck className="h-4 w-4" />
+              Verify repo
+            </a>
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="outline"

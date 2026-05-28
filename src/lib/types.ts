@@ -8,6 +8,7 @@ export interface Issue {
   title: string;
   body: string | null;
   repoName: string;
+  gssocProjectUrl: string | null;
   comments: number;
   labels: Label[];
   url: string;

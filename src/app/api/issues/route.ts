@@ -262,16 +262,23 @@ async function fetchOfficialProjects(signal?: AbortSignal) {
   const data = (await response.json()) as GssocProjectsResponse;
   const projects = data.projects ?? [];
   const projectMap = new Map<string, GssocProject>();
+  const candidates: Array<[string, GssocProject]> = [];
 
   for (const project of projects) {
     const repoName = normalizeRepoName(project.owner_repo) ?? extractRepoName(project.repo_url ?? "");
 
     if (repoName) {
-      projectMap.set(repoName, project);
+      candidates.push([repoName, project]);
     }
   }
 
-  console.info(`Loaded ${projectMap.size} official GSSoC projects`);
+  await asyncPool(candidates, 8, async ([repoName, project]) => {
+    if (await hasGssocProjectPage(repoName, signal)) {
+      projectMap.set(repoName, project);
+    }
+  });
+
+  console.info(`Loaded ${projectMap.size} official GSSoC projects with live project pages`);
   return projectMap;
 }
 
@@ -317,6 +324,7 @@ async function fetchRepoIssues(
   return [firstPage.items, ...remainingItems].flat().map((item) => ({
     ...mapGitHubIssue(item),
     repoName,
+    gssocProjectUrl: getGssocProjectUrl(repoName),
     lastCommitAt: project.gh?.last_push ?? null
   }));
 }
@@ -392,6 +400,7 @@ function filterOfficialIssues(
       return {
         ...issue,
         repoName,
+        gssocProjectUrl: getGssocProjectUrl(repoName),
         lastCommitAt: issue.lastCommitAt ?? officialProject.gh?.last_push ?? null
       };
     })
@@ -519,6 +528,7 @@ function normalizeScrapedIssue(raw: unknown): NormalizedIssue | null {
     title,
     body: stringValue(record.body) ?? stringValue(record.description),
     repoName,
+    gssocProjectUrl: null,
     comments: numberValue(record.comments) ?? numberValue(record.commentsCount) ?? 0,
     labels: normalizeLabels(record.labels),
     url,
@@ -594,6 +604,7 @@ function mapGitHubIssue(item: GitHubIssueItem): NormalizedIssue {
     title: item.title,
     body: item.body,
     repoName: extractRepoName(item.repository_url) ?? "unknown/repository",
+    gssocProjectUrl: null,
     comments: item.comments,
     labels: item.labels.map((label) => ({
       name: label.name ?? "",
@@ -933,6 +944,56 @@ function normalizeRepoName(value: string | null | undefined) {
   }
 
   return `${parts[0]}/${parts[1]}`;
+}
+
+function getGssocProjectUrl(repoName: string) {
+  const normalizedRepoName = normalizeRepoName(repoName);
+
+  if (!normalizedRepoName) {
+    return null;
+  }
+
+  return `https://gssoc.girlscript.org/projects/${encodeURIComponent(normalizedRepoName)}`;
+}
+
+async function hasGssocProjectPage(repoName: string, signal?: AbortSignal) {
+  const projectUrl = getGssocProjectUrl(repoName);
+
+  if (!projectUrl) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(projectUrl, {
+      method: "HEAD",
+      headers: requestHeaders,
+      next: { revalidate: 300 },
+      signal
+    });
+
+    if (response.ok) {
+      return true;
+    }
+
+    if (response.status !== 405) {
+      return false;
+    }
+
+    const getResponse = await fetch(projectUrl, {
+      headers: requestHeaders,
+      next: { revalidate: 300 },
+      signal
+    });
+
+    return getResponse.ok;
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+
+    console.warn(`Could not verify GSSoC project page for ${repoName}`, error);
+    return false;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
