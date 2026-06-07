@@ -44,6 +44,8 @@ export type IssueStreamEvent =
       totalRepos: number;
       searchableRepos: number;
       issues: Issue[];
+      whitelist?: WhitelistFilter;
+      projects?: OfficialProject[];
     }
   | {
       type: "complete";
@@ -53,6 +55,8 @@ export type IssueStreamEvent =
       searchableRepos: number;
       issues: Issue[];
       total: number;
+      whitelist?: WhitelistFilter;
+      projects?: OfficialProject[];
     }
   | {
       type: "fallback";
@@ -72,4 +76,23 @@ export interface BlacklistedIssue {
 export interface BlacklistState {
   repos: string[];
   issues: BlacklistedIssue[];
+}
+
+export interface WhitelistState {
+  enabled: boolean;
+  repos: string[];
+}
+
+export interface OfficialProject {
+  repoName: string;
+  openIssues: number;
+  lastPush: string | null;
+}
+
+export interface WhitelistFilter {
+  enabled: boolean;
+  requestedRepos: string[];
+  resolvedRepos: string[];
+  invalidRepos: string[];
+  fellBackToAll: boolean;
 }

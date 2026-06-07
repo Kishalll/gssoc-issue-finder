@@ -3,10 +3,15 @@ import { NextResponse } from "next/server";
 import {
   EXCLUDED_LABELS,
   GSSOC_ISSUES_URL,
-  GSSOC_PROJECTS_URL,
   PARENT_ISSUE_LABELS
 } from "@/lib/constants";
-import type { ApiResponse, FilterState, Issue, Label } from "@/lib/types";
+import {
+  extractRepoName,
+  fetchOfficialProjects,
+  normalizeRepoName,
+  type GssocProject
+} from "@/lib/gssoc-projects";
+import type { ApiResponse, FilterState, Issue, Label, OfficialProject, WhitelistFilter } from "@/lib/types";
 
 type NormalizedIssue = Issue & {
   assignee?: unknown;
@@ -38,19 +43,6 @@ type GitHubSearchResponse = {
   items: GitHubIssueItem[];
 };
 
-type GssocProject = {
-  repo_url?: string;
-  owner_repo?: string;
-  gh?: {
-    last_push?: string;
-    open_issues?: number;
-  };
-};
-
-type GssocProjectsResponse = {
-  projects?: GssocProject[];
-};
-
 type GitHubCommitResponseItem = {
   commit?: {
     author?: {
@@ -76,11 +68,6 @@ type RepoIssueCacheEntry = {
   issues: NormalizedIssue[];
 };
 
-type OfficialProjectCacheEntry = {
-  fetchedAt: number;
-  projects: Map<string, GssocProject>;
-};
-
 type RepoIssueCacheLookup = {
   issues: NormalizedIssue[] | null;
   metadata?: RepoMetadata;
@@ -90,12 +77,38 @@ const requestHeaders = {
   "User-Agent": "GSSoC-Issue-Finder/1.0"
 };
 
+function serializeProjects(projects: Map<string, GssocProject>) {
+  return Array.from(projects.entries())
+    .map(([repoName, project]) => ({
+      repoName,
+      openIssues: project.gh?.open_issues ?? 0,
+      lastPush: project.gh?.last_push ?? null
+    }))
+    .sort((left, right) => left.repoName.localeCompare(right.repoName));
+}
+
+async function loadProjectsList(signal?: AbortSignal) {
+  try {
+    const projects = await fetchOfficialProjects(signal);
+    const list = serializeProjects(projects);
+    return NextResponse.json({ projects: list, total: list.length });
+  } catch (error) {
+    console.error("Failed to load official GSSoC projects", error);
+    const message =
+      error instanceof Error && error.name === "AbortError"
+        ? "GSSoC projects API timed out. Check your network and retry."
+        : "Failed to load official GSSoC projects";
+    return NextResponse.json(
+      { error: message, projects: [], total: 0 },
+      { status: 503 }
+    );
+  }
+}
+
 const OFFICIAL_REPO_ISSUE_FETCH_CONCURRENCY = 4;
 const REPO_ISSUE_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
-const OFFICIAL_PROJECT_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
 const REPO_ACTIVITY_CHECK_MAX_AGE_MS = 2 * 60 * 1000;
 const repoIssueCache = new Map<string, RepoIssueCacheEntry>();
-let officialProjectCache: OfficialProjectCacheEntry | null = null;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -104,9 +117,20 @@ export async function GET(request: Request) {
     type: searchParams.get("type") ?? ""
   };
   const shouldStream = searchParams.get("stream") === "1";
+  const isBootstrap = searchParams.get("bootstrap") === "1";
+  const whitelistEnabled = searchParams.get("whitelistEnabled") === "1";
+  const whitelistParam = searchParams.get("whitelist") ?? "";
+  const whitelistRequested = whitelistParam
+    .split(",")
+    .map((repo) => repo.trim())
+    .filter((repo) => repo.length > 0);
+
+  if (isBootstrap) {
+    return loadProjectsList(request.signal);
+  }
 
   if (shouldStream) {
-    return streamIssues(request, filters);
+    return streamIssues(request, filters, { enabled: whitelistEnabled, repos: whitelistRequested });
   }
 
   const errors: unknown[] = [];
@@ -124,10 +148,16 @@ export async function GET(request: Request) {
       throw new Error("Official project allowlist is unavailable");
     }
 
-    const officialIssues = await fetchOfficialProjectIssues(officialProjects, request.signal);
+    const { projects: filteredProjects, whitelist } = applyWhitelist(officialProjects, {
+      enabled: whitelistEnabled,
+      repos: whitelistRequested
+    });
+
+    const officialIssues = await fetchOfficialProjectIssues(filteredProjects, request.signal);
 
     if (officialIssues.length > 0) {
-      return NextResponse.json(await toApiResponse(officialIssues, filters));
+      const response = await toApiResponse(officialIssues, filters);
+      return NextResponse.json({ ...response, whitelist });
     }
   } catch (error) {
     errors.push(error);
@@ -140,7 +170,8 @@ export async function GET(request: Request) {
     const scrapedIssues = await scrapeGssocIssues();
 
     if (scrapedIssues.length > 0) {
-      return NextResponse.json(await toApiResponse(filterOfficialIssues(scrapedIssues, officialProjects), filters));
+      const response = await toApiResponse(filterOfficialIssues(scrapedIssues, officialProjects), filters);
+      return NextResponse.json(response);
     }
   } catch (error) {
     errors.push(error);
@@ -151,7 +182,8 @@ export async function GET(request: Request) {
 
   try {
     const githubIssues = await fetchGitHubIssues(filters);
-    return NextResponse.json(await toApiResponse(filterOfficialIssues(githubIssues, officialProjects), filters));
+    const response = await toApiResponse(filterOfficialIssues(githubIssues, officialProjects), filters);
+    return NextResponse.json(response);
   } catch (error) {
     errors.push(error);
     console.error("GitHub issue search failed", error);
@@ -165,7 +197,11 @@ export async function GET(request: Request) {
   );
 }
 
-async function streamIssues(request: Request, filters: FilterState) {
+async function streamIssues(
+  request: Request,
+  filters: FilterState,
+  whitelistInput: { enabled: boolean; repos: string[] }
+) {
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -180,17 +216,36 @@ async function streamIssues(request: Request, filters: FilterState) {
           message: "Loading official GSSoC repos and matching issues. Please wait."
         });
 
-        const officialProjects = await fetchOfficialProjects(request.signal);
+        const allOfficialProjects = await fetchOfficialProjects(request.signal);
 
         if (request.signal.aborted) {
           controller.close();
           return;
         }
 
+        const { projects: officialProjects, whitelist } = applyWhitelist(
+          allOfficialProjects,
+          whitelistInput
+        );
+
+        if (whitelist.fellBackToAll) {
+          send({
+            type: "fallback",
+            message:
+              whitelist.requestedRepos.length === 0
+                ? "Whitelist is on but empty. Showing all repos."
+                : `No valid repos in whitelist (${whitelist.invalidRepos.join(", ")}). Showing all repos.`
+          });
+        }
+
         send({
           type: "status",
-          message: `Loaded ${officialProjects.size} official repos. Starting repo scan...`
+          message: `Loaded ${allOfficialProjects.size} official repos${
+            whitelist.enabled ? `, scanning ${officialProjects.size} whitelisted repos` : ""
+          }. Starting repo scan...`
         });
+
+        const officialProjectsList = serializeProjects(allOfficialProjects);
 
         const token = process.env.NEXT_PUBLIC_GITHUB_PAT?.trim();
 
@@ -206,10 +261,12 @@ async function streamIssues(request: Request, filters: FilterState) {
             type: "complete",
             message: "Search complete.",
             loadedRepos: officialProjects.size,
-            totalRepos: officialProjects.size,
+            totalRepos: allOfficialProjects.size,
             searchableRepos: officialProjects.size,
             issues: response.issues,
-            total: response.total
+            total: response.total,
+            whitelist,
+            projects: officialProjectsList
           });
           controller.close();
           return;
@@ -224,7 +281,9 @@ async function streamIssues(request: Request, filters: FilterState) {
 
         send({
           type: "status",
-          message: `Loaded ${officialProjects.size} official repos. Checking repo activity...`
+          message: `Loaded ${allOfficialProjects.size} official repos${
+            whitelist.enabled ? `, scanning ${officialProjects.size} whitelisted repos` : ""
+          }. Checking repo activity...`
         });
 
         let loadedRepos = officialProjects.size - searchableRepos;
@@ -262,9 +321,11 @@ async function streamIssues(request: Request, filters: FilterState) {
                 ? `Loaded ${loadedRepos} of ${officialProjects.size} repos from cache. Fetching changed repos...`
                 : `Loaded ${loadedRepos} of ${officialProjects.size} repos from cache.`,
             loadedRepos,
-            totalRepos: officialProjects.size,
+            totalRepos: allOfficialProjects.size,
             searchableRepos,
-            issues: prepared
+            issues: prepared,
+            whitelist,
+            projects: officialProjectsList
           });
         }
 
@@ -287,9 +348,11 @@ async function streamIssues(request: Request, filters: FilterState) {
             type: "progress",
             message: `Loaded ${currentLoadedRepos} of ${officialProjects.size} repos.`,
             loadedRepos: currentLoadedRepos,
-            totalRepos: officialProjects.size,
+            totalRepos: allOfficialProjects.size,
             searchableRepos,
-            issues: prepared
+            issues: prepared,
+            whitelist,
+            projects: officialProjectsList
           });
         });
 
@@ -300,8 +363,10 @@ async function streamIssues(request: Request, filters: FilterState) {
 
         const response = await prepareApiResponse(
           collectedIssues.filter((issue) => shouldIncludeIssue(issue, filters)),
-          officialProjects.size,
+          allOfficialProjects.size,
           searchableRepos,
+          whitelist,
+          officialProjectsList,
           request.signal
         );
         send(response);
@@ -329,43 +394,63 @@ async function streamIssues(request: Request, filters: FilterState) {
   });
 }
 
-async function fetchOfficialProjects(signal?: AbortSignal) {
-  if (
-    officialProjectCache &&
-    Date.now() - officialProjectCache.fetchedAt < OFFICIAL_PROJECT_CACHE_MAX_AGE_MS
-  ) {
-    return officialProjectCache.projects;
+function applyWhitelist(
+  officialProjects: Map<string, GssocProject>,
+  whitelist: { enabled: boolean; repos: string[] }
+): { projects: Map<string, GssocProject>; whitelist: WhitelistFilter } {
+  if (!whitelist.enabled) {
+    return {
+      projects: officialProjects,
+      whitelist: {
+        enabled: false,
+        requestedRepos: [],
+        resolvedRepos: [],
+        invalidRepos: [],
+        fellBackToAll: false
+      }
+    };
   }
 
-  const response = await fetch(GSSOC_PROJECTS_URL, {
-    headers: requestHeaders,
-    next: { revalidate: 300 },
-    signal
-  });
+  const requestedRepos = Array.from(
+    new Set(whitelist.repos.map((repo) => normalizeRepoName(repo)).filter((repo): repo is string => Boolean(repo)))
+  );
+  const resolvedRepos: string[] = [];
+  const invalidRepos: string[] = [];
+  const filtered = new Map<string, GssocProject>();
 
-  if (!response.ok) {
-    throw new Error(`GSSoC projects API returned ${response.status}`);
-  }
-
-  const data = (await response.json()) as GssocProjectsResponse;
-  const projects = data.projects ?? [];
-  const projectMap = new Map<string, GssocProject>();
-
-  for (const project of projects) {
-    const repoName = normalizeRepoName(project.owner_repo) ?? extractRepoName(project.repo_url ?? "");
-
-    if (repoName) {
-      projectMap.set(repoName, project);
+  for (const repo of requestedRepos) {
+    const project = officialProjects.get(repo);
+    if (project) {
+      filtered.set(repo, project);
+      resolvedRepos.push(repo);
+    } else {
+      invalidRepos.push(repo);
     }
   }
 
-  officialProjectCache = {
-    fetchedAt: Date.now(),
-    projects: projectMap
-  };
+  if (filtered.size === 0) {
+    return {
+      projects: officialProjects,
+      whitelist: {
+        enabled: true,
+        requestedRepos,
+        resolvedRepos,
+        invalidRepos,
+        fellBackToAll: true
+      }
+    };
+  }
 
-  console.info(`Loaded ${projectMap.size} official GSSoC projects`);
-  return projectMap;
+  return {
+    projects: filtered,
+    whitelist: {
+      enabled: true,
+      requestedRepos,
+      resolvedRepos,
+      invalidRepos,
+      fellBackToAll: false
+    }
+  };
 }
 
 async function fetchOfficialProjectIssues(
@@ -812,6 +897,8 @@ async function prepareApiResponse(
   issues: NormalizedIssue[],
   totalRepos: number,
   searchableRepos: number,
+  whitelist: WhitelistFilter,
+  projects: OfficialProject[],
   signal?: AbortSignal
 ) {
   const prepared = await prepareIssues(issues, signal);
@@ -823,7 +910,9 @@ async function prepareApiResponse(
     totalRepos,
     searchableRepos,
     issues: prepared,
-    total: prepared.length
+    total: prepared.length,
+    whitelist,
+    projects
   };
 }
 
@@ -1044,64 +1133,6 @@ function dedupeIssues(issues: NormalizedIssue[]) {
     seen.add(key);
     return true;
   });
-}
-
-function extractRepoName(url: string) {
-  const normalized = normalizeRepoName(url);
-
-  if (normalized) {
-    return normalized;
-  }
-
-  const cleaned = url.replace(/\/+$/, "");
-  const parts = cleaned.split("/");
-  const githubHostIndex = parts.findIndex((part) => part === "github.com");
-
-  if (githubHostIndex >= 0) {
-    const owner = parts.at(githubHostIndex + 1);
-    const repo = parts.at(githubHostIndex + 2);
-
-    return owner && repo ? `${owner}/${repo}` : null;
-  }
-
-  const reposIndex = parts.findIndex((part) => part === "repos");
-
-  if (reposIndex >= 0) {
-    const owner = parts.at(reposIndex + 1);
-    const repo = parts.at(reposIndex + 2);
-
-    return owner && repo ? `${owner}/${repo}` : null;
-  }
-
-  const repo = parts.at(-1);
-  const owner = parts.at(-2);
-
-  if (!owner || !repo) {
-    return null;
-  }
-
-  return `${owner}/${repo}`;
-}
-
-function normalizeRepoName(value: string | null | undefined) {
-  if (!value) {
-    return null;
-  }
-
-  const cleaned = value
-    .trim()
-    .replace(/^https?:\/\/github\.com\//i, "")
-    .replace(/^git@github\.com:/i, "")
-    .replace(/\.git$/i, "")
-    .replace(/\/+$/, "")
-    .toLowerCase();
-  const parts = cleaned.split("/");
-
-  if (parts.length < 2 || !parts[0] || !parts[1]) {
-    return null;
-  }
-
-  return `${parts[0]}/${parts[1]}`;
 }
 
 function getGssocProjectUrl(repoName: string) {

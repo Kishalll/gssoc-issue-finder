@@ -2,7 +2,17 @@
 
 import * as React from "react";
 
-import type { ApiResponse, FilterState, Issue, IssueProgressState, IssueStreamEvent } from "@/lib/types";
+import { useProjectsList } from "@/components/projects-list-provider";
+import type {
+  ApiResponse,
+  FilterState,
+  Issue,
+  IssueProgressState,
+  IssueStreamEvent,
+  OfficialProject,
+  WhitelistFilter,
+  WhitelistState
+} from "@/lib/types";
 
 const initialFilters: FilterState = {
   level: "",
@@ -22,6 +32,11 @@ export function useIssues() {
   const [error, setError] = React.useState<string | null>(null);
   const [filters, setFilters] = React.useState<FilterState>(initialFilters);
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [whitelist, setWhitelist] = React.useState<WhitelistState>({
+    enabled: false,
+    repos: []
+  });
+  const { setProjects } = useProjectsList();
   const abortControllerRef = React.useRef<AbortController | null>(null);
 
   React.useEffect(() => {
@@ -60,6 +75,13 @@ export function useIssues() {
         params.set("type", filters.type);
       }
 
+      if (whitelist.enabled) {
+        params.set("whitelistEnabled", "1");
+        if (whitelist.repos.length > 0) {
+          params.set("whitelist", whitelist.repos.join(","));
+        }
+      }
+
       params.set("stream", "1");
       const response = await fetch(`/api/issues?${params.toString()}`, {
         signal: controller.signal
@@ -77,6 +99,8 @@ export function useIssues() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let lastWhitelist: WhitelistFilter | null = null;
+      let lastProjects: OfficialProject[] | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -96,12 +120,23 @@ export function useIssues() {
 
           const event = JSON.parse(line) as IssueStreamEvent;
 
-          if (event.type === "status" || event.type === "fallback") {
+          if (event.type === "status") {
+            setLoadingStatus(event.message);
+            continue;
+          }
+
+          if (event.type === "fallback") {
             setLoadingStatus(event.message);
             continue;
           }
 
           if (event.type === "progress") {
+            if (event.whitelist) {
+              lastWhitelist = event.whitelist;
+            }
+            if (event.projects) {
+              lastProjects = event.projects;
+            }
             setLoadingStatus(event.message);
             setProgress({
               loadedRepos: event.loadedRepos,
@@ -113,7 +148,12 @@ export function useIssues() {
           }
 
           if (event.type === "complete") {
-            setLoadingStatus(event.message);
+            if (event.whitelist) {
+              lastWhitelist = event.whitelist;
+            }
+            if (event.projects) {
+              lastProjects = event.projects;
+            }
             setProgress({
               loadedRepos: event.loadedRepos,
               totalRepos: event.totalRepos,
@@ -127,6 +167,27 @@ export function useIssues() {
             throw new Error(event.message);
           }
         }
+      }
+
+      if (lastProjects) {
+        setProjects(lastProjects);
+      }
+
+      if (
+        lastWhitelist &&
+        lastWhitelist.enabled &&
+        lastWhitelist.fellBackToAll &&
+        lastWhitelist.resolvedRepos.length === 0
+      ) {
+        setLoadingStatus(
+          lastWhitelist.requestedRepos.length === 0
+            ? "Whitelist is on but empty. Showing all official repos."
+            : `No valid repos in whitelist (${lastWhitelist.invalidRepos.join(
+                ", "
+              )}). Showing all official repos.`
+        );
+      } else {
+        setLoadingStatus("Search complete.");
       }
     } catch (fetchError) {
       if (controller.signal.aborted) {
@@ -142,7 +203,7 @@ export function useIssues() {
       }
       setLoading(false);
     }
-  }, [filters]);
+  }, [filters, whitelist, setProjects]);
 
   const cancelFetch = React.useCallback(() => {
     abortControllerRef.current?.abort();
@@ -175,6 +236,8 @@ export function useIssues() {
     setFilters,
     searchQuery,
     setSearchQuery,
+    whitelist,
+    setWhitelist,
     fetchIssues,
     cancelFetch
   };
