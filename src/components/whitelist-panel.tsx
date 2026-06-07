@@ -98,7 +98,7 @@ export function WhitelistPanel({
             />
           )}
           <p className="mt-1.5 text-xs text-muted-foreground">
-            Type to search across {allRepos.length} official repos. Prefix matches appear first.
+            Type to search across {allRepos.length} official repos.
           </p>
         </div>
 

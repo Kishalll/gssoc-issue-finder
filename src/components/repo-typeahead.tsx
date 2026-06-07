@@ -118,7 +118,7 @@ export function RepoTypeahead({
   const hasNoMatches = showDropdown && matches.length === 0;
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative isolate">
       <div className="relative">
         <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -138,7 +138,7 @@ export function RepoTypeahead({
         />
       </div>
       {showDropdown ? (
-        <div className="absolute left-0 right-0 top-full z-30 mt-1.5 max-h-80 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md">
+        <div className="absolute left-0 right-0 top-full z-50 mt-1.5 max-h-80 overflow-y-auto rounded-md border border-border/80 bg-popover/95 text-popover-foreground shadow-lg backdrop-blur-md">
           {hasNoMatches ? (
             <p className="px-3 py-3 text-sm text-muted-foreground">
               No matching repos in the official GSSoC list.

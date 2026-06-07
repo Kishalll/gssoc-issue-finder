@@ -41,8 +41,6 @@ function HomeContent() {
     setFilters,
     searchQuery,
     setSearchQuery,
-    whitelist,
-    setWhitelist,
     fetchIssues,
     cancelFetch
   } = useIssues();
@@ -50,7 +48,6 @@ function HomeContent() {
   const {
     whitelist: repoWhitelist,
     hasLoaded: whitelistLoaded,
-    setEnabled: setWhitelistEnabled,
     addRepo: addWhitelistRepo,
     removeRepo: removeWhitelistRepo
   } = useRepoWhitelist();
@@ -58,10 +55,6 @@ function HomeContent() {
   const [hasSearched, setHasSearched] = React.useState(false);
   const [isStatusDismissed, setIsStatusDismissed] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<TabId>("home");
-
-  React.useEffect(() => {
-    setWhitelist(repoWhitelist);
-  }, [repoWhitelist, setWhitelist]);
 
   const blacklistedRepos = React.useMemo(() => new Set(blacklist.repos), [blacklist.repos]);
   const blacklistedIssueIds = React.useMemo(
@@ -92,7 +85,7 @@ function HomeContent() {
   const handleSearch = async () => {
     setHasSearched(true);
     setVisibleCount(PAGE_SIZE);
-    await fetchIssues();
+    await fetchIssues(repoWhitelist);
   };
 
   React.useEffect(() => {
@@ -131,10 +124,6 @@ function HomeContent() {
               <h1 className="mt-3 text-3xl font-bold tracking-tight text-balance md:text-4xl">
                 Find open GSSoC issues that need an owner.
               </h1>
-              <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
-                Pull the latest approved-project issues, filter by useful labels, then search locally
-                across the results without another network call.
-              </p>
             </section>
 
             <Card className="mb-8 shadow-soft">
