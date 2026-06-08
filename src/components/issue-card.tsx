@@ -3,7 +3,7 @@ import { Ban, Crown, ExternalLink, FolderCheck, FolderX, GitCommitHorizontal } f
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Issue } from "@/lib/types";
-import { formatRelativeTime, getContrastTextColor } from "@/lib/utils";
+import { formatRelativeTime } from "@/lib/utils";
 
 interface IssueCardProps {
   issue: Issue;
@@ -48,19 +48,19 @@ export function IssueCard({
       {issue.labels.length > 0 ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {issue.labels.map((label) => {
-            const labelColor = `#${label.color.replace("#", "")}`;
-            const textColor = getContrastTextColor(label.color);
-            const isDarkLabel = textColor === "#f9fafb";
+            const hexColor = label.color.startsWith("#") ? label.color.slice(1) : label.color;
+            const r = parseInt(hexColor.slice(0, 2), 16) || 0;
+            const g = parseInt(hexColor.slice(2, 4), 16) || 0;
+            const b = parseInt(hexColor.slice(4, 6), 16) || 0;
 
             return (
               <Badge
                 key={`${issue.id}-${label.name}`}
                 variant="outline"
+                className="label-badge border font-medium"
                 style={{
-                  borderColor: labelColor,
-                  color: textColor,
-                  backgroundColor: isDarkLabel ? labelColor : `${labelColor}24`
-                }}
+                  "--label-rgb": `${r}, ${g}, ${b}`
+                } as React.CSSProperties}
               >
                 {label.name}
               </Badge>
