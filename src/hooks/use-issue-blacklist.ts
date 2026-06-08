@@ -11,21 +11,17 @@ const initialState: BlacklistState = {
   issues: []
 };
 
-export function useIssueBlacklist() {
-  const [blacklist, setBlacklist] = React.useState<BlacklistState>(initialState);
-  const [hasLoaded, setHasLoaded] = React.useState(false);
+let cachedBlacklist: BlacklistState | null = null;
+const listeners = new Set<() => void>();
 
-  React.useEffect(() => {
-    try {
-      const storedValue = window.localStorage.getItem(STORAGE_KEY);
-
-      if (!storedValue) {
-        setHasLoaded(true);
-        return;
-      }
-
-      const parsedValue = JSON.parse(storedValue) as Partial<BlacklistState>;
-      setBlacklist({
+function getBlacklist(): BlacklistState {
+  if (cachedBlacklist) return cachedBlacklist;
+  if (typeof window === "undefined") return initialState;
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const parsedValue = JSON.parse(stored) as Partial<BlacklistState>;
+      const parsed: BlacklistState = {
         repos: Array.isArray(parsedValue.repos)
           ? parsedValue.repos.filter((repo): repo is string => typeof repo === "string")
           : [],
@@ -37,24 +33,48 @@ export function useIssueBlacklist() {
                 typeof issue?.repoName === "string"
             )
           : []
-      });
-    } catch {
-      setBlacklist(initialState);
-    } finally {
-      setHasLoaded(true);
+      };
+      cachedBlacklist = parsed;
+      return parsed;
     }
-  }, []);
+  } catch {}
+  return initialState;
+}
+
+function setGlobalBlacklist(setter: (prev: BlacklistState) => BlacklistState) {
+  const next = setter(getBlacklist());
+  cachedBlacklist = next;
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }
+  listeners.forEach((l) => l());
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  const handleStorage = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY) {
+      cachedBlacklist = null;
+      listener();
+    }
+  };
+  window.addEventListener("storage", handleStorage);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener("storage", handleStorage);
+  };
+}
+
+export function useIssueBlacklist() {
+  const blacklist = React.useSyncExternalStore(subscribe, getBlacklist, () => initialState);
+  const [hasLoaded, setHasLoaded] = React.useState(false);
 
   React.useEffect(() => {
-    if (!hasLoaded) {
-      return;
-    }
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(blacklist));
-  }, [blacklist, hasLoaded]);
+    setHasLoaded(true);
+  }, []);
 
   const addRepo = React.useCallback((repoName: string) => {
-    setBlacklist((current) => {
+    setGlobalBlacklist((current) => {
       if (current.repos.includes(repoName)) {
         return current;
       }
@@ -67,14 +87,14 @@ export function useIssueBlacklist() {
   }, []);
 
   const removeRepo = React.useCallback((repoName: string) => {
-    setBlacklist((current) => ({
+    setGlobalBlacklist((current) => ({
       ...current,
       repos: current.repos.filter((repo) => repo !== repoName)
     }));
   }, []);
 
   const addIssue = React.useCallback((issue: Issue) => {
-    setBlacklist((current) => {
+    setGlobalBlacklist((current) => {
       if (current.issues.some((entry) => entry.id === issue.id)) {
         return current;
       }
@@ -89,7 +109,7 @@ export function useIssueBlacklist() {
   }, []);
 
   const removeIssue = React.useCallback((issueId: string) => {
-    setBlacklist((current) => ({
+    setGlobalBlacklist((current) => ({
       ...current,
       issues: current.issues.filter((issue) => issue.id !== issueId)
     }));

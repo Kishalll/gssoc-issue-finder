@@ -11,57 +11,76 @@ const initialState: WhitelistState = {
   repos: []
 };
 
-export function useRepoWhitelist() {
-  const [whitelist, setWhitelist] = React.useState<WhitelistState>(initialState);
-  const [hasLoaded, setHasLoaded] = React.useState(false);
+let cachedWhitelist: WhitelistState | null = null;
+const listeners = new Set<() => void>();
 
-  React.useEffect(() => {
-    try {
-      const storedValue = window.localStorage.getItem(STORAGE_KEY);
-
-      if (!storedValue) {
-        setHasLoaded(true);
-        return;
-      }
-
-      const parsedValue = JSON.parse(storedValue) as Partial<WhitelistState>;
-      setWhitelist({
+function getWhitelist(): WhitelistState {
+  if (cachedWhitelist) return cachedWhitelist;
+  if (typeof window === "undefined") return initialState;
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const parsedValue = JSON.parse(stored) as Partial<WhitelistState>;
+      const parsed: WhitelistState = {
         enabled: typeof parsedValue.enabled === "boolean" ? parsedValue.enabled : false,
         repos: Array.isArray(parsedValue.repos)
           ? parsedValue.repos.filter((repo): repo is string => typeof repo === "string")
           : []
-      });
-    } catch {
-      setWhitelist(initialState);
-    } finally {
-      setHasLoaded(true);
+      };
+      cachedWhitelist = parsed;
+      return parsed;
     }
-  }, []);
+  } catch {}
+  return initialState;
+}
+
+function setGlobalWhitelist(setter: (prev: WhitelistState) => WhitelistState) {
+  const next = setter(getWhitelist());
+  cachedWhitelist = next;
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }
+  listeners.forEach((l) => l());
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  const handleStorage = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY) {
+      cachedWhitelist = null;
+      listener();
+    }
+  };
+  window.addEventListener("storage", handleStorage);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener("storage", handleStorage);
+  };
+}
+
+export function useRepoWhitelist() {
+  const whitelist = React.useSyncExternalStore(subscribe, getWhitelist, () => initialState);
+  const [hasLoaded, setHasLoaded] = React.useState(false);
 
   React.useEffect(() => {
-    if (!hasLoaded) {
-      return;
-    }
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(whitelist));
-  }, [whitelist, hasLoaded]);
+    setHasLoaded(true);
+  }, []);
 
   const setEnabled = React.useCallback((enabled: boolean) => {
-    setWhitelist((current) => ({ ...current, enabled }));
+    setGlobalWhitelist((current) => ({ ...current, enabled }));
   }, []);
 
   const toggle = React.useCallback(() => {
-    setWhitelist((current) => ({ ...current, enabled: !current.enabled }));
+    setGlobalWhitelist((current) => ({ ...current, enabled: !current.enabled }));
   }, []);
 
   const addRepo = React.useCallback((repoName: string) => {
     const normalized = repoName.trim();
-
     if (!normalized) {
       return;
     }
 
-    setWhitelist((current) => {
+    setGlobalWhitelist((current) => {
       if (current.repos.includes(normalized)) {
         return current;
       }
@@ -74,14 +93,14 @@ export function useRepoWhitelist() {
   }, []);
 
   const removeRepo = React.useCallback((repoName: string) => {
-    setWhitelist((current) => ({
+    setGlobalWhitelist((current) => ({
       ...current,
       repos: current.repos.filter((repo) => repo !== repoName)
     }));
   }, []);
 
   const clearRepos = React.useCallback(() => {
-    setWhitelist((current) => ({ ...current, repos: [] }));
+    setGlobalWhitelist((current) => ({ ...current, repos: [] }));
   }, []);
 
   const isWhitelisted = React.useCallback(

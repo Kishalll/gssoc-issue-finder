@@ -19,6 +19,8 @@ const initialFilters: FilterState = {
   type: ""
 };
 
+const STASH_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+
 export function useIssues() {
   const [issues, setIssues] = React.useState<Issue[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -34,6 +36,12 @@ export function useIssues() {
   const [searchQuery, setSearchQuery] = React.useState("");
   const { setProjects } = useProjectsList();
   const abortControllerRef = React.useRef<AbortController | null>(null);
+  const lastFetchWasWhitelistRef = React.useRef<boolean | null>(null);
+  const [stash, setStash] = React.useState<{
+    issues: Issue[];
+    progress: IssueProgressState;
+    timestamp: number;
+  } | null>(null);
 
   React.useEffect(() => {
     if (!loading) {
@@ -50,6 +58,39 @@ export function useIssues() {
 
   const fetchIssues = React.useCallback(
     async (whitelist: WhitelistState) => {
+      // Stash current full search if switching to whitelist search
+      if (lastFetchWasWhitelistRef.current === false && whitelist.enabled) {
+        setStash((currentStash) => {
+          if (issues.length > 0 || progress.loadedRepos > 0) {
+            return {
+              issues: [...issues],
+              progress: { ...progress },
+              timestamp: Date.now()
+            };
+          }
+          return currentStash;
+        });
+      }
+
+      // Restore stash if switching back to full search and stash is recent
+      if (whitelist.enabled === false && stash) {
+        const age = Date.now() - stash.timestamp;
+        if (age < STASH_MAX_AGE_MS) {
+          abortControllerRef.current?.abort();
+          setIssues(stash.issues);
+          setProgress(stash.progress);
+          setLoading(false);
+          setLoadingStatus("Restored previous search results.");
+          setStash(null);
+          lastFetchWasWhitelistRef.current = false;
+          return;
+        } else {
+          setStash(null);
+        }
+      }
+
+      lastFetchWasWhitelistRef.current = whitelist.enabled;
+
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -201,7 +242,7 @@ export function useIssues() {
         setLoading(false);
       }
     },
-    [filters, setProjects]
+    [filters, setProjects, issues, progress, stash]
   );
 
   const cancelFetch = React.useCallback(() => {
