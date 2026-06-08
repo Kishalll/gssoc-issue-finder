@@ -10,6 +10,7 @@ import { FilterBar } from "@/components/filter-bar";
 import { Header } from "@/components/header";
 import { IssueList } from "@/components/issue-list";
 import { LoadingSkeleton } from "@/components/loading-skeleton";
+import { PatAlert } from "@/components/pat-alert";
 import { ProjectsListProvider } from "@/components/projects-list-provider";
 import { SearchBar } from "@/components/search-bar";
 import { Tabs, type TabId } from "@/components/tabs";
@@ -117,7 +118,8 @@ function HomeContent() {
           />
         }
       />
-      <main className="container py-8 md:py-10">
+      <main className="container flex-1 py-8">
+        <PatAlert />
         {activeTab === "config" ? (
           <ConfigPage />
         ) : (
