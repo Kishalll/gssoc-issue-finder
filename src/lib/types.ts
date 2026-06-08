@@ -14,6 +14,7 @@ export interface Issue {
   url: string;
   createdAt: string;
   lastCommitAt: string | null;
+  isOwnerIssue: boolean;
 }
 
 export interface FilterState {

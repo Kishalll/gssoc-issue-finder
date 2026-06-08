@@ -36,6 +36,8 @@ type GitHubIssueItem = {
   assignee?: unknown;
   assignees?: unknown[] | null;
   pull_request?: unknown;
+  user?: { login: string };
+  author_association?: string;
 };
 
 type GitHubSearchResponse = {
@@ -800,8 +802,21 @@ function normalizeScrapedIssue(raw: unknown): NormalizedIssue | null {
       stringValue(record.pushedAt) ??
       stringValue(record.pushed_at),
     assignee: record.assignee,
-    assignees: Array.isArray(record.assignees) ? record.assignees : null
+    assignees: Array.isArray(record.assignees) ? record.assignees : null,
+    isOwnerIssue: getIsOwnerIssueScraped(record, repoName)
   };
+}
+
+function getIsOwnerIssueScraped(record: Record<string, unknown>, repoName: string) {
+  const authorAssociation = stringValue(record.author_association) ?? stringValue(record.authorAssociation);
+  if (authorAssociation === "OWNER") return true;
+
+  const user = asRecord(record.user);
+  const userLogin = stringValue(user.login) ?? stringValue(record.author) ?? stringValue(record.creator);
+  const [owner] = repoName.split("/");
+  if (userLogin && owner && userLogin.toLowerCase() === owner.toLowerCase()) return true;
+
+  return false;
 }
 
 async function fetchGitHubIssues(filters: FilterState, signal?: AbortSignal) {
@@ -872,7 +887,8 @@ function mapGitHubIssue(item: GitHubIssueItem): NormalizedIssue {
     lastCommitAt: null,
     assignee: item.assignee,
     assignees: item.assignees,
-    pullRequest: item.pull_request
+    pullRequest: item.pull_request,
+    isOwnerIssue: item.author_association === "OWNER" || (Boolean(item.user?.login) && extractRepoName(item.repository_url)?.split("/")[0].toLowerCase() === item.user?.login.toLowerCase())
   };
 }
 
@@ -1018,6 +1034,13 @@ async function getGitHubErrorMessage(response: Response) {
 }
 
 function sortIssues(left: Issue, right: Issue) {
+  if (left.isOwnerIssue && !right.isOwnerIssue) {
+    return -1;
+  }
+  if (!left.isOwnerIssue && right.isOwnerIssue) {
+    return 1;
+  }
+
   if (left.comments !== right.comments) {
     return left.comments - right.comments;
   }
