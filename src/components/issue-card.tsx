@@ -69,9 +69,12 @@ export function IssueCard({
         </div>
       ) : null}
 
-      <p className="mt-3 text-sm text-muted-foreground">
-        {issue.repoName} <span aria-hidden="true">•</span> {issue.comments} comments{" "}
-        <span aria-hidden="true">•</span> {formatRelativeTime(issue.createdAt)}
+      <p className="mt-4 flex flex-wrap items-center gap-1.5 text-base font-medium text-foreground/90">
+        <span className="text-primary transition-colors hover:text-primary/80">{issue.repoName}</span>
+        <span aria-hidden="true" className="mx-1 text-muted-foreground/60">•</span>
+        <span>{issue.comments} comments</span>
+        <span aria-hidden="true" className="mx-1 text-muted-foreground/60">•</span>
+        <span>{formatRelativeTime(issue.createdAt)}</span>
       </p>
 
       <div className="mt-4 flex flex-wrap gap-2">
