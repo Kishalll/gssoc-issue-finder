@@ -19,7 +19,7 @@ const initialFilters: FilterState = {
   type: ""
 };
 
-const STASH_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+const STASH_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 
 export function useIssues() {
   const [issues, setIssues] = React.useState<Issue[]>([]);
@@ -72,21 +72,17 @@ export function useIssues() {
         });
       }
 
+      let initialIssues: Issue[] = [];
+      let initialProgress: IssueProgressState = { loadedRepos: 0, totalRepos: 0, searchableRepos: 0 };
+
       // Restore stash if switching back to full search and stash is recent
       if (whitelist.enabled === false && stash) {
         const age = Date.now() - stash.timestamp;
         if (age < STASH_MAX_AGE_MS) {
-          abortControllerRef.current?.abort();
-          setIssues(stash.issues);
-          setProgress(stash.progress);
-          setLoading(false);
-          setLoadingStatus("Restored previous search results.");
-          setStash(null);
-          lastFetchWasWhitelistRef.current = false;
-          return;
-        } else {
-          setStash(null);
+          initialIssues = stash.issues;
+          initialProgress = stash.progress;
         }
+        setStash(null);
       }
 
       lastFetchWasWhitelistRef.current = whitelist.enabled;
@@ -98,9 +94,9 @@ export function useIssues() {
       setLoading(true);
       setLoadingSeconds(0);
       setLoadingStatus("Loading official GSSoC repos and matching issues. Please wait.");
-      setProgress({ loadedRepos: 0, totalRepos: 0, searchableRepos: 0 });
+      setProgress(initialProgress);
       setError(null);
-      setIssues([]);
+      setIssues(initialIssues);
 
       try {
         const params = new URLSearchParams();
