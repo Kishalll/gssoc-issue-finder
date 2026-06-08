@@ -7,29 +7,51 @@ import type { BlacklistState } from "@/lib/types";
 
 interface BlacklistPanelProps {
   blacklist: BlacklistState;
+  onToggle: () => void;
   onRemoveRepo: (repoName: string) => void;
   onRemoveIssue: (issueId: string) => void;
 }
 
 export function BlacklistPanel({
   blacklist,
+  onToggle,
   onRemoveRepo,
   onRemoveIssue
 }: BlacklistPanelProps) {
   const hasEntries = blacklist.repos.length > 0 || blacklist.issues.length > 0;
 
+  const isOn = blacklist.enabled;
+
   return (
     <div className="rounded-lg border border-dashed border-border/80 bg-muted/30 p-4">
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5 rounded-md bg-background p-2 text-muted-foreground">
-          <Ban className="h-4 w-4" />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-md bg-background p-2 text-muted-foreground">
+            <Ban className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-foreground">Blacklist</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              When ON, hidden repos and issues stay out of search results on this browser.
+            </p>
+          </div>
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-foreground">Blacklist</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Hidden repos and issues stay out of search results on this browser.
-          </p>
-        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={isOn}
+          onClick={onToggle}
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors ${
+            isOn ? "border-primary bg-primary" : "border-input bg-muted"
+          }`}
+        >
+          <span
+            className={`inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform ${
+              isOn ? "translate-x-5" : "translate-x-0.5"
+            }`}
+          />
+          <span className="sr-only">{isOn ? "Disable blacklist" : "Enable blacklist"}</span>
+        </button>
       </div>
 
       {hasEntries ? (

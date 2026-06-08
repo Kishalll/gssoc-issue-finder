@@ -7,6 +7,7 @@ import type { BlacklistState, Issue } from "@/lib/types";
 const STORAGE_KEY = "gssoc-issue-finder-blacklist";
 
 const initialState: BlacklistState = {
+  enabled: true,
   repos: [],
   issues: []
 };
@@ -22,6 +23,7 @@ function getBlacklist(): BlacklistState {
     if (stored) {
       const parsedValue = JSON.parse(stored) as Partial<BlacklistState>;
       const parsed: BlacklistState = {
+        enabled: typeof parsedValue.enabled === "boolean" ? parsedValue.enabled : true,
         repos: Array.isArray(parsedValue.repos)
           ? parsedValue.repos.filter((repo): repo is string => typeof repo === "string")
           : [],
@@ -115,9 +117,17 @@ export function useIssueBlacklist() {
     }));
   }, []);
 
+  const toggle = React.useCallback(() => {
+    setGlobalBlacklist((current) => ({
+      ...current,
+      enabled: !current.enabled
+    }));
+  }, []);
+
   return {
     blacklist,
     hasLoaded,
+    toggle,
     addRepo,
     removeRepo,
     addIssue,

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { X } from "lucide-react";
 
-import { BlacklistPanel } from "@/components/blacklist-panel";
+
 import { ConfigPage } from "@/components/config-page";
 import { EmptyState } from "@/components/empty-state";
 import { FilterBar } from "@/components/filter-bar";
@@ -44,10 +44,11 @@ function HomeContent() {
     fetchIssues,
     cancelFetch
   } = useIssues();
-  const { blacklist, hasLoaded, addRepo, removeRepo, addIssue, removeIssue } = useIssueBlacklist();
+  const { blacklist, hasLoaded, toggle: toggleBlacklist, addRepo, removeRepo, addIssue, removeIssue } = useIssueBlacklist();
   const {
     whitelist: repoWhitelist,
     hasLoaded: whitelistLoaded,
+    toggle: toggleWhitelist,
     addRepo: addWhitelistRepo,
     removeRepo: removeWhitelistRepo
   } = useRepoWhitelist();
@@ -65,17 +66,21 @@ function HomeContent() {
   const visibleIssues = React.useMemo(
     () =>
       issues.filter(
-        (issue) => !blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id)
+        (issue) =>
+          !blacklist.enabled ||
+          (!blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id))
       ),
-    [issues, blacklistedIssueIds, blacklistedRepos]
+    [issues, blacklist.enabled, blacklistedIssueIds, blacklistedRepos]
   );
 
   const visibleAllIssues = React.useMemo(
     () =>
       allIssues.filter(
-        (issue) => !blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id)
+        (issue) =>
+          !blacklist.enabled ||
+          (!blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id))
       ),
-    [allIssues, blacklistedIssueIds, blacklistedRepos]
+    [allIssues, blacklist.enabled, blacklistedIssueIds, blacklistedRepos]
   );
 
   const paginatedIssues = visibleIssues.slice(0, visibleCount);
@@ -140,31 +145,88 @@ function HomeContent() {
                   onCancel={cancelFetch}
                   isLoading={loading}
                 />
-                {whitelistLoaded && repoWhitelist.enabled ? (
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                    <span>
-                      Whitelist ON: {repoWhitelist.repos.length} repo
-                      {repoWhitelist.repos.length === 1 ? "" : "s"} selected
-                      {repoWhitelist.repos.length === 0 ? " (empty - showing all repos)" : ""}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => setActiveTab("config")}
-                    >
-                      Manage
-                    </Button>
-                  </div>
-                ) : null}
-                {hasLoaded ? (
-                  <BlacklistPanel
-                    blacklist={blacklist}
-                    onRemoveRepo={removeRepo}
-                    onRemoveIssue={removeIssue}
-                  />
-                ) : null}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {whitelistLoaded ? (
+                    <div className={`flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm transition-colors ${repoWhitelist.enabled ? 'border-primary/40 bg-primary/5' : 'border-dashed bg-muted/30'}`}>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={repoWhitelist.enabled}
+                          onClick={toggleWhitelist}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors ${
+                            repoWhitelist.enabled ? "border-primary bg-primary" : "border-input bg-muted"
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform ${
+                              repoWhitelist.enabled ? "translate-x-5" : "translate-x-0.5"
+                            }`}
+                          />
+                          <span className="sr-only">{repoWhitelist.enabled ? "Disable whitelist" : "Enable whitelist"}</span>
+                        </button>
+                        <span className={repoWhitelist.enabled ? 'font-medium text-foreground' : 'text-muted-foreground'}>
+                          Whitelist {repoWhitelist.enabled ? "Active" : "Inactive"}
+                          {repoWhitelist.enabled && (
+                            <span className="ml-2 text-xs font-normal text-muted-foreground block sm:inline">
+                              • {repoWhitelist.repos.length} repo{repoWhitelist.repos.length === 1 ? "" : "s"}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 bg-background px-3 text-xs"
+                        onClick={() => setActiveTab("config")}
+                      >
+                        Manage
+                      </Button>
+                    </div>
+                  ) : null}
+
+                  {hasLoaded ? (
+                    <div className={`flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm transition-colors ${blacklist.enabled ? 'border-primary/40 bg-primary/5' : 'border-dashed bg-muted/30'}`}>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={blacklist.enabled}
+                          onClick={toggleBlacklist}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors ${
+                            blacklist.enabled ? "border-primary bg-primary" : "border-input bg-muted"
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform ${
+                              blacklist.enabled ? "translate-x-5" : "translate-x-0.5"
+                            }`}
+                          />
+                          <span className="sr-only">{blacklist.enabled ? "Disable blacklist" : "Enable blacklist"}</span>
+                        </button>
+                        <span className={blacklist.enabled ? 'font-medium text-foreground' : 'text-muted-foreground'}>
+                          Blacklist {blacklist.enabled ? "Active" : "Inactive"}
+                          {blacklist.enabled && (
+                            <span className="ml-2 text-xs font-normal text-muted-foreground block sm:inline">
+                              • {blacklist.repos.length + blacklist.issues.length} item{blacklist.repos.length + blacklist.issues.length === 1 ? "" : "s"}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 bg-background px-3 text-xs"
+                        onClick={() => setActiveTab("config")}
+                      >
+                        Manage
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+
               </CardContent>
             </Card>
 

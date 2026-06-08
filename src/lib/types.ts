@@ -75,6 +75,7 @@ export interface BlacklistedIssue {
 }
 
 export interface BlacklistState {
+  enabled: boolean;
   repos: string[];
   issues: BlacklistedIssue[];
 }

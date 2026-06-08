@@ -20,6 +20,7 @@ export function ConfigPage() {
   const {
     blacklist,
     hasLoaded: blacklistLoaded,
+    toggle: toggleBlacklist,
     addRepo: addBlacklistRepo,
     removeRepo: removeBlacklistRepo,
     addIssue: addBlacklistIssue,
@@ -58,6 +59,7 @@ export function ConfigPage() {
         {blacklistLoaded ? (
           <BlacklistPanel
             blacklist={blacklist as BlacklistState}
+            onToggle={toggleBlacklist}
             onRemoveRepo={removeBlacklistRepo}
             onRemoveIssue={removeBlacklistIssue}
           />
