@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useIssueBlacklist } from "@/hooks/use-issue-blacklist";
 import { useIssues } from "@/hooks/use-issues";
+import { useOwnerIssues } from "@/hooks/use-owner-issues";
 import { useRepoWhitelist } from "@/hooks/use-repo-whitelist";
 import { PAGE_SIZE } from "@/lib/constants";
 
@@ -53,6 +54,7 @@ function HomeContent() {
     addRepo: addWhitelistRepo,
     removeRepo: removeWhitelistRepo
   } = useRepoWhitelist();
+  const ownerIssues = useOwnerIssues();
   const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
   const [hasSearched, setHasSearched] = React.useState(false);
   const [isStatusDismissed, setIsStatusDismissed] = React.useState(false);
@@ -64,25 +66,40 @@ function HomeContent() {
     [blacklist.issues]
   );
 
-  const visibleIssues = React.useMemo(
-    () =>
-      issues.filter(
-        (issue) =>
-          !blacklist.enabled ||
-          (!blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id))
-      ),
-    [issues, blacklist.enabled, blacklistedIssueIds, blacklistedRepos]
-  );
+  const { filteredIssues, filteredAllIssues, ownerFallback } = React.useMemo(() => {
+    const nonBlacklistedIssues = issues.filter(
+      (issue) =>
+        !blacklist.enabled ||
+        (!blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id))
+    );
+    const nonBlacklistedAllIssues = allIssues.filter(
+      (issue) =>
+        !blacklist.enabled ||
+        (!blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id))
+    );
 
-  const visibleAllIssues = React.useMemo(
-    () =>
-      allIssues.filter(
-        (issue) =>
-          !blacklist.enabled ||
-          (!blacklistedRepos.has(issue.repoName) && !blacklistedIssueIds.has(issue.id))
-      ),
-    [allIssues, blacklist.enabled, blacklistedIssueIds, blacklistedRepos]
-  );
+    let finalIssues = nonBlacklistedIssues;
+    let finalAllIssues = nonBlacklistedAllIssues;
+    let fallback = false;
+
+    if (ownerIssues.enabled) {
+      const ownerOnly = nonBlacklistedIssues.filter((issue) => issue.isOwnerIssue);
+      const ownerOnlyAll = nonBlacklistedAllIssues.filter((issue) => issue.isOwnerIssue);
+
+      if (ownerOnly.length > 0) {
+        finalIssues = ownerOnly;
+        finalAllIssues = ownerOnlyAll;
+      } else if (nonBlacklistedIssues.length > 0) {
+        // Fallback: Owner Issues is ON, but no owner issues found. Show all non-blacklisted.
+        fallback = true;
+      }
+    }
+
+    return { filteredIssues: finalIssues, filteredAllIssues: finalAllIssues, ownerFallback: fallback };
+  }, [issues, allIssues, blacklist.enabled, blacklistedIssueIds, blacklistedRepos, ownerIssues.enabled]);
+
+  const visibleIssues = filteredIssues;
+  const visibleAllIssues = filteredAllIssues;
 
   const paginatedIssues = visibleIssues.slice(0, visibleCount);
   const hiddenCount = allIssues.length - visibleAllIssues.length;
@@ -147,7 +164,7 @@ function HomeContent() {
                   onCancel={cancelFetch}
                   isLoading={loading}
                 />
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
                   {whitelistLoaded ? (
                     <div className={`flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm transition-colors ${repoWhitelist.enabled ? 'border-primary/40 bg-primary/5' : 'border-dashed bg-muted/30'}`}>
                       <div className="flex items-center gap-3">
@@ -227,6 +244,32 @@ function HomeContent() {
                       </Button>
                     </div>
                   ) : null}
+
+                  {ownerIssues.hasLoaded ? (
+                    <div className={`flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm transition-colors ${ownerIssues.enabled ? 'border-primary/40 bg-primary/5' : 'border-dashed bg-muted/30'}`}>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={ownerIssues.enabled}
+                          onClick={ownerIssues.toggle}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors ${
+                            ownerIssues.enabled ? "border-primary bg-primary" : "border-input bg-muted"
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform ${
+                              ownerIssues.enabled ? "translate-x-5" : "translate-x-0.5"
+                            }`}
+                          />
+                          <span className="sr-only">{ownerIssues.enabled ? "Disable Owner Issues" : "Enable Owner Issues"}</span>
+                        </button>
+                        <span className={ownerIssues.enabled ? 'font-medium text-foreground' : 'text-muted-foreground'}>
+                          Owner Issues {ownerIssues.enabled ? "Only" : "Inactive"}
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
               </CardContent>
@@ -235,6 +278,12 @@ function HomeContent() {
             {error ? (
               <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 {error}
+              </div>
+            ) : null}
+
+            {ownerFallback ? (
+              <div className="mb-4 flex items-center gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-500">
+                <span>No owner&apos;s issues found, showing all issues.</span>
               </div>
             ) : null}
 
