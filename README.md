@@ -1,6 +1,6 @@
 # GSSoC Issue Finder
 
-Hey everyone! I built this tool to make finding open and unassigned issues for GirlScript Summer of Code (GSSoC) 2026 way easier. It directly connects to the official list of approved GSSoC '26 projects and filters through GitHub to bring you issues that actually need your help.
+GSSoC Issue Finder helps contributors discover open, unassigned issues across all official GSSoC 2026 projects. It syncs with the official project API and filters GitHub in real time.
 
 ### Here is what you need to know about how it works:
 
