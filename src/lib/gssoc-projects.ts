@@ -23,8 +23,23 @@ type OfficialProjectCacheEntry = {
 };
 
 const OFFICIAL_PROJECT_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
-const OFFICIAL_PROJECT_FETCH_TIMEOUT_MS = 8000;
+const OFFICIAL_PROJECT_FETCH_TIMEOUT_MS = 15000;
 let officialProjectCache: OfficialProjectCacheEntry | null = null;
+
+export function friendlyFetchError(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === "AbortError" || error.message.includes("aborted")) {
+      return "The GSSoC projects server is not responding. Please try again later.";
+    }
+    if (error.name === "TypeError" && error.message.toLowerCase().includes("fetch")) {
+      return "Could not reach the GSSoC projects server. Check your internet connection and try again.";
+    }
+    if (error.message.includes("500") || error.message.includes("502") || error.message.includes("503") || error.message.includes("504")) {
+      return "The GSSoC projects server is temporarily unavailable. Please try again in a moment.";
+    }
+  }
+  return "Failed to load the official GSSoC project list. Please try again later.";
+}
 
 export async function fetchOfficialProjects(signal?: AbortSignal) {
   if (

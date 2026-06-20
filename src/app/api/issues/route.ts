@@ -8,6 +8,7 @@ import {
 import {
   extractRepoName,
   fetchOfficialProjects,
+  friendlyFetchError,
   normalizeRepoName,
   type GssocProject
 } from "@/lib/gssoc-projects";
@@ -79,6 +80,27 @@ const requestHeaders = {
   "User-Agent": "GSSoC-Issue-Finder/1.0"
 };
 
+function friendlyStreamError(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === "AbortError" || error.message.includes("aborted")) {
+      return "The request timed out. Please try again.";
+    }
+    if (error.name === "TypeError" && error.message.toLowerCase().includes("fetch")) {
+      return "Network error. Check your connection and try again.";
+    }
+    if (error.message.includes("rate limit") || error.message.includes("403")) {
+      return "GitHub rate limit reached. Add a GitHub token in .env.local or wait a few minutes and try again.";
+    }
+    if (error.message.includes("401")) {
+      return "GitHub token is invalid or expired. Update NEXT_PUBLIC_GITHUB_PAT in .env.local.";
+    }
+    if (error.message.includes("500") || error.message.includes("502") || error.message.includes("503") || error.message.includes("504")) {
+      return "GitHub API is temporarily unavailable. Please try again in a moment.";
+    }
+  }
+  return "Something went wrong while fetching issues. Please try again.";
+}
+
 function serializeProjects(projects: Map<string, GssocProject>) {
   return Array.from(projects.entries())
     .map(([repoName, project]) => ({
@@ -89,19 +111,15 @@ function serializeProjects(projects: Map<string, GssocProject>) {
     .sort((left, right) => left.repoName.localeCompare(right.repoName));
 }
 
-async function loadProjectsList(signal?: AbortSignal) {
+async function loadProjectsList() {
   try {
-    const projects = await fetchOfficialProjects(signal);
+    const projects = await fetchOfficialProjects();
     const list = serializeProjects(projects);
     return NextResponse.json({ projects: list, total: list.length });
   } catch (error) {
     console.error("Failed to load official GSSoC projects", error);
-    const message =
-      error instanceof Error && error.name === "AbortError"
-        ? "GSSoC projects API timed out. Check your network and retry."
-        : "Failed to load official GSSoC projects";
     return NextResponse.json(
-      { error: message, projects: [], total: 0 },
+      { error: friendlyFetchError(error), projects: [], total: 0 },
       { status: 503 }
     );
   }
@@ -128,7 +146,7 @@ export async function GET(request: Request) {
     .filter((repo) => repo.length > 0);
 
   if (isBootstrap) {
-    return loadProjectsList(request.signal);
+    return loadProjectsList();
   }
 
   if (shouldStream) {
@@ -218,7 +236,7 @@ async function streamIssues(
           message: "Loading official GSSoC repos and matching issues. Please wait."
         });
 
-        const allOfficialProjects = await fetchOfficialProjects(request.signal);
+        const allOfficialProjects = await fetchOfficialProjects();
 
         if (request.signal.aborted) {
           controller.close();
@@ -378,7 +396,7 @@ async function streamIssues(
           console.error("Issue stream failed", error);
           send({
             type: "error",
-            message: error instanceof Error ? error.message : "Failed to fetch issues"
+            message: friendlyStreamError(error)
           });
         }
 
@@ -862,8 +880,15 @@ async function fetchGitHubSearchUrl(
   const response = await fetch(url, { headers, signal });
 
   if (!response.ok) {
+    const message = await getGitHubErrorMessage(response);
+    if (response.status === 403 || response.status === 429) {
+      throw new Error(`GitHub rate limit reached. Add a GitHub token in .env.local or wait a few minutes and try again.`);
+    }
+    if (response.status === 401) {
+      throw new Error("GitHub token is invalid or expired. Update NEXT_PUBLIC_GITHUB_PAT in .env.local.");
+    }
     throw new Error(
-      `GitHub search returned ${response.status}: ${await getGitHubErrorMessage(response)}`
+      `GitHub search returned ${response.status}: ${message}`
     );
   }
 

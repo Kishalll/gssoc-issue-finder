@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { X } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 
 import { ConfigPage } from "@/components/config-page";
@@ -25,7 +26,9 @@ import { PAGE_SIZE } from "@/lib/constants";
 export default function Home() {
   return (
     <ProjectsListProvider>
-      <HomeContent />
+      <React.Suspense fallback={<div className="min-h-screen bg-background" />}>
+        <HomeContent />
+      </React.Suspense>
     </ProjectsListProvider>
   );
 }
@@ -58,7 +61,25 @@ function HomeContent() {
   const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
   const [hasSearched, setHasSearched] = React.useState(false);
   const [isStatusDismissed, setIsStatusDismissed] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<TabId>("home");
+
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const activeTab = (searchParams.get("tab") as TabId) || "home";
+
+  const handleTabChange = React.useCallback(
+    (tab: TabId) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (tab === "home") {
+        params.delete("tab");
+      } else {
+        params.set("tab", tab);
+      }
+      router.push(pathname + "?" + params.toString());
+    },
+    [searchParams, pathname, router]
+  );
 
   const blacklistedRepos = React.useMemo(() => new Set(blacklist.repos), [blacklist.repos]);
   const blacklistedIssueIds = React.useMemo(
@@ -66,7 +87,7 @@ function HomeContent() {
     [blacklist.issues]
   );
 
-  const { filteredIssues, filteredAllIssues, ownerFallback } = React.useMemo(() => {
+  const { filteredIssues, filteredAllIssues, ownerFallback, blacklistedCount, ownerHiddenCount } = React.useMemo(() => {
     const nonBlacklistedIssues = issues.filter(
       (issue) =>
         !blacklist.enabled ||
@@ -81,6 +102,9 @@ function HomeContent() {
     let finalIssues = nonBlacklistedIssues;
     let finalAllIssues = nonBlacklistedAllIssues;
     let fallback = false;
+    let oHiddenCount = 0;
+    
+    const bCount = allIssues.length - nonBlacklistedAllIssues.length;
 
     if (ownerIssues.enabled) {
       const ownerOnly = nonBlacklistedIssues.filter((issue) => issue.isOwnerIssue);
@@ -89,20 +113,26 @@ function HomeContent() {
       if (ownerOnly.length > 0) {
         finalIssues = ownerOnly;
         finalAllIssues = ownerOnlyAll;
+        oHiddenCount = nonBlacklistedAllIssues.length - ownerOnlyAll.length;
       } else if (nonBlacklistedIssues.length > 0) {
         // Fallback: Owner Issues is ON, but no owner issues found. Show all non-blacklisted.
         fallback = true;
       }
     }
 
-    return { filteredIssues: finalIssues, filteredAllIssues: finalAllIssues, ownerFallback: fallback };
+    return { 
+        filteredIssues: finalIssues, 
+        filteredAllIssues: finalAllIssues, 
+        ownerFallback: fallback,
+        blacklistedCount: bCount,
+        ownerHiddenCount: oHiddenCount
+    };
   }, [issues, allIssues, blacklist.enabled, blacklistedIssueIds, blacklistedRepos, ownerIssues.enabled]);
 
   const visibleIssues = filteredIssues;
   const visibleAllIssues = filteredAllIssues;
 
   const paginatedIssues = visibleIssues.slice(0, visibleCount);
-  const hiddenCount = allIssues.length - visibleAllIssues.length;
   const hasMore = visibleCount < visibleIssues.length;
 
   const handleSearch = async () => {
@@ -127,7 +157,7 @@ function HomeContent() {
         rightSlot={
           <Tabs
             active={activeTab}
-            onChange={setActiveTab}
+            onChange={handleTabChange}
             items={[
               { id: "home", label: "Home" },
               { id: "config", label: "Config" }
@@ -198,7 +228,7 @@ function HomeContent() {
                         variant="outline"
                         size="sm"
                         className="h-8 bg-background px-3 text-xs"
-                        onClick={() => setActiveTab("config")}
+                        onClick={() => handleTabChange("config")}
                       >
                         Manage
                       </Button>
@@ -238,7 +268,7 @@ function HomeContent() {
                         variant="outline"
                         size="sm"
                         className="h-8 bg-background px-3 text-xs"
-                        onClick={() => setActiveTab("config")}
+                        onClick={() => handleTabChange("config")}
                       >
                         Manage
                       </Button>
@@ -305,9 +335,10 @@ function HomeContent() {
 
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">
-                Found {visibleIssues.length} unassigned issues with gssoc26 label
+                Found {visibleIssues.length} unassigned issues 
                 {searchQuery ? ` (${visibleAllIssues.length} before local search)` : ""}
-                {hiddenCount > 0 ? ` • ${hiddenCount} hidden by blacklist` : ""}
+                {blacklistedCount > 0 ? ` • ${blacklistedCount} hidden by blacklist` : ""}
+                {ownerHiddenCount > 0 ? ` • ${ownerHiddenCount} hidden by owner filter` : ""}
                 {loading && progress.totalRepos > 0
                   ? ` • ${progress.loadedRepos} / ${progress.totalRepos} repos loaded`
                   : ""}
